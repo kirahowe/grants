@@ -56,6 +56,11 @@ expire soon afterward.
    credentials is worth more than any key it replaces.
 9. **Run agents in a sandbox.** Outside a sandbox, an agent is effectively the
    developer, and nothing on the laptop can tell the two apart.
+10. **Degrade per platform, and say so.** Apple hardware gets the complete
+    design. Every other platform gets as much of it as its hardware and OS
+    allow. When a protection is missing, the issuer falls back to the next
+    best one, and the cost of that fallback is written down rather than
+    hidden.
 
 ## Vocabulary
 
@@ -313,6 +318,10 @@ flowchart LR
 The local issuer turns the laptop into an identity provider. It holds signing
 keys, but no credentials.
 
+This section describes the issuer on macOS, where the Secure Enclave is
+Apple's hardware key store. [Platforms](#platforms) covers what changes on
+Windows and Linux.
+
 The issuer's keys are generated inside the Secure Enclave and can't be
 exported, and the enclave lets only the issuer's signed binary use them. A
 process that takes over the developer's account can ask the issuer to sign
@@ -371,6 +380,33 @@ repository as code too.
 Applying the configuration requires the owner's login to the provider, and the
 owner does this outside any agent session. Whether setup can feel light is the
 main product risk.
+
+## Platforms
+
+The issuer is defined by the protections it provides, not by the Secure
+Enclave. macOS on Apple hardware is the reference platform and provides all
+of them. On other platforms the issuer provides what the hardware and OS
+allow, and falls back where they don't.
+
+| Protection | macOS | Windows | Linux | When it's missing |
+| --- | --- | --- | --- | --- |
+| Signing keys can't be exported | Secure Enclave | TPM 2.0 | TPM 2.0 | Use a security key such as a YubiKey. See [open question 6](#open-questions) for machines with neither |
+| Only the issuer binary can use its keys | Keychain access tied to the code signature | No known equivalent | No known equivalent | Code running as the developer can use the keys directly and skip the issuer's checks. Unsandboxed code then has what a tampered issuer has (threat model A7) |
+| Other processes can't attach to the issuer | Hardened runtime | No known option for ordinary applications | Partial, through Yama `ptrace_scope` | Code running as the developer can read unsealed keys and credentials from the issuer's memory |
+| The issuer can identify the peer process | Unix socket peer lookup | Named-pipe client process ID | `SO_PEERCRED` | No fallback. Task identification depends on it |
+| Presence | Touch ID on the key | Windows Hello | No standard | Use the touch requirement on a security key |
+| The issuer's own approval window | Native window | Native window | Native window | Separate work on each OS |
+
+Everything outside the macOS column is on the list of
+[claims to check](#claims-to-check).
+
+A security key works the same way on every platform, and its touch
+requirement gives real presence. It's the uniform fallback for both the key
+store and presence, at the cost of extra hardware.
+
+Each fallback has to be explicit. `grants doctor` reports which protections
+hold on the current machine, and the threat model records what each missing
+protection costs.
 
 ## The gateway
 
@@ -514,8 +550,9 @@ exist.
 5. **Parity.** Injection gives a task a local base URL that production doesn't
    use. Is that acceptable for application tasks, or should injection be for
    agents only?
-6. **Linux and Windows.** A TPM can stand in for the Secure Enclave, but
-   presence and the code-signature boundary need equivalents.
+6. **Machines with no hardware key store.** Linux VMs and WSL often have no
+   TPM, and not everyone has a security key. Should the issuer run with a
+   software key and an explicit warning, or refuse to run?
 7. **Decoy credentials.** With no real secrets on disk, a credential that an
    agent finds in `.env` or `~/.aws` could be a planted decoy, so any use of
    one would be a real alarm rather than a false positive. Is that in scope?
@@ -537,6 +574,17 @@ The following claims come from memory or from search summaries:
   the target is signed with the hardened runtime.
 - On macOS, a daemon can identify the peer process on a Unix socket reliably
   enough to match it to a launched task.
+- On Windows and Linux, a TPM 2.0 can hold a non-exportable P-256 signing
+  key.
+- Neither Windows nor Linux can restrict a TPM key to one signed binary.
+- On Linux, Yama `ptrace_scope` can stop processes of the same user from
+  attaching to the issuer. Windows has no equivalent for ordinary
+  applications.
+- `SO_PEERCRED` on Linux, and the named-pipe client process ID on Windows,
+  identify the peer process reliably enough to match it to a launched task.
+- Windows Hello can require a biometric for every use of a key.
+- A YubiKey's PIV applet holds P-256 keys and can require a touch for every
+  use.
 - GitHub App keys must be RSA, which the Secure Enclave can't hold.
 - A JDBC Postgres connection can take its client certificate and key from
   memory, without a file on disk.

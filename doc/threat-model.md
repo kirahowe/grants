@@ -104,6 +104,13 @@ and can reach into a running one. The issuer records which task asked for a
 grant, but in this zone that record is only bookkeeping. It doesn't keep tasks
 apart.
 
+These boundaries describe macOS. Windows and Linux have a hardware boundary
+through a TPM 2.0 or a security key, but as far as the design knows they have
+no code-signature boundary. Code in the no-boundary zone can then use the
+issuer's keys directly, and so has what a tampered issuer has (A7). The
+design's [Platforms](design.md#platforms) section lists what each platform
+provides and what each fallback costs.
+
 ## What the sandbox has to close
 
 ```mermaid
