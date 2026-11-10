@@ -6,15 +6,15 @@ Surveyed on 2026-11-10.
 
 Three provider pages were read directly: Anthropic's workload identity
 federation reference, OpenAI's federation guide, and Stripe's federation page.
-Rows marked "read" below were read in full during the survey. Rows marked
-"summary" come from search-result summaries and were not checked against the
-source. Treat those as leads to confirm.
+In the tables below, rows marked "read" were read in full during the survey.
+Rows marked "summary" come from search-result summaries and weren't checked
+against the source, so treat them as leads to confirm.
 
 ## What products do with a static upstream key
 
-Nearly every product uses one pattern. The real key stays outside the
-workload. The workload holds a placeholder, and a proxy swaps in the key on
-requests to allowlisted hosts.
+Nearly every product follows the same pattern. The real key stays outside the
+workload, which holds a placeholder instead, and a proxy swaps in the real key
+on requests to allowlisted hosts.
 
 | Product | Where the real key lives | How the caller is identified | Routing | Scope it enforces | Checked |
 | --- | --- | --- | --- | --- | --- |
@@ -31,45 +31,47 @@ requests to allowlisted hosts.
 | Aembit, Keycard | The vendor's cloud | Attested workload identity | An edge proxy or sidecar | The vendor's policy engine | summary |
 | Octo STS | A GitHub App key inside the service | An OIDC token, checked against a policy file in the target repository | The token is returned to the caller | The permissions the policy lists | summary |
 
-Three gaps are common to them:
+These products share three gaps:
 
-- Scope is shallow. Most products scope by host. Vercel matches path and
-  method. Aperture's docs advise read-only upstream keys, because every caller
-  with a grant shares one credential.
-- None offers request or spend budgets as a core feature.
+- Scope is shallow. Most of them scope by host, and Vercel also matches path
+  and method. Aperture's docs advise using read-only upstream keys, because
+  every caller with a grant shares one credential.
+- None of them offers request or spend budgets as a core feature.
 - A compromised workload can still use the key for anything the key allows.
-  The proxy prevents theft of the key and does nothing about misuse.
+  The proxy stops the key from being stolen, but does nothing about misuse.
 
-None of these products removes the stored key. Octo STS comes closest for one
-provider: it puts federation in front of GitHub, which does not federate, and
-keeps its policy in the repository it protects.
+None of these products removes the stored key. Octo STS comes closest, for one
+provider: it puts federation in front of GitHub, which doesn't federate on its
+own, and keeps its policy in the repository it protects.
 
 ## Techniques that do not remove the stored key
 
-- Split keys and multi-party computation. Products such as Privy and Lit use
-  them for signing keys. A bearer API key has to be whole when it is sent, so
-  the party that reassembles it becomes the trusted holder.
-- Proof of possession added at a proxy. DPoP, mTLS, and HTTP message
+- **Split keys and multi-party computation.** Products such as Privy and Lit
+  use these for signing keys. A bearer API key has to be whole when it's sent,
+  though, so whichever party reassembles it becomes the trusted holder.
+- **Proof of possession added at a proxy.** DPoP, mTLS, and HTTP message
   signatures work only when the upstream checks the proof, and a provider with
-  static keys does not. Binding the hop between the task and a gateway is
-  still possible.
-- Enclave custodians. Turnkey and Privy keep signing keys in attested
+  static keys doesn't. It's still possible to bind the hop between the task
+  and a gateway.
+- **Enclave custodians.** Turnkey and Privy keep signing keys in attested
   enclaves. The survey found no product that does this for arbitrary SaaS API
   keys.
-- Tokenization proxies from payments. VGS can alias an API key and reveal it
-  only on a route to an allowlisted host. Evervault Relay is similar. Both are
-  hosted services priced for payment data.
-- The Secure Enclave on a Mac holds only P-256 keys. It can wrap other data
-  with ECIES and require a fingerprint for each use. A wrapped API key still
-  has to be unwrapped into process memory to be sent.
+- **Tokenization proxies from payments.** VGS can alias an API key and reveal
+  it only on a route to an allowlisted host, and Evervault Relay is similar.
+  Both are hosted services priced for payment data.
+- **The Secure Enclave on a Mac.** It holds only P-256 keys. It can wrap other
+  data with ECIES and require a fingerprint for each use, but a wrapped API key
+  still has to be unwrapped into process memory before it can be sent.
 
 ## Detection
 
-Decoy credentials catch a workload that goes looking. GitGuardian and Tracebit
-sell this, and `canaryhook` and `agent-canary` are open-source versions aimed
-at coding agents. A decoy reports a theft after the fact and cannot stop it.
-GitHub's secret scanning partner program reports leaked keys to providers, and
-revocation is then the provider's choice.
+Decoy credentials catch a workload that goes looking for secrets. GitGuardian
+and Tracebit sell this, and `canaryhook` and `agent-canary` are open-source
+versions aimed at coding agents. A decoy reports a theft after it happens, but
+can't prevent one.
+
+GitHub's secret scanning partner program reports leaked keys to providers.
+Whether to revoke a key is then up to the provider.
 
 ## What providers offer
 
@@ -78,8 +80,8 @@ revocation is then the provider's choice.
 | Provider | What was found | Checked |
 | --- | --- | --- |
 | Anthropic | A custom OIDC issuer can be registered with its public keys inline, so the issuer needs no public endpoint. ES256 and the RSA families are accepted. The token lasts 60 seconds to 24 hours. Rules match on subject, audience, claims, or a CEL expression. A `jti` can be used once. The narrowest scope is inference in one workspace | read |
-| OpenAI | Custom OIDC issuers by discovery or inline public keys, SPIFFE JWT tokens, and X.509 for the API. A mapping names a project and service account, and optional permissions narrow it. The page does not list accepted signing algorithms | read |
-| Stripe | Private preview. Issuers are AWS and Google Cloud. The access token lasts one hour | read |
+| OpenAI | Custom OIDC issuers, by discovery or with inline public keys, plus SPIFFE JWT tokens, and X.509 for the API. A mapping names a project and service account, and optional permissions narrow it. The page doesn't list accepted signing algorithms | read |
+| Stripe | Private preview. The issuers are AWS and Google Cloud. The access token lasts one hour | read |
 | Tailscale | Federation with a token-exchange endpoint | summary |
 | PlanetScale | OIDC from GitHub Actions and Depot CI | summary |
 | Datadog | AWS roles, and GitHub through a Datadog action | summary |
@@ -90,11 +92,11 @@ revocation is then the provider's choice.
 | Provider | What was found | Checked |
 | --- | --- | --- |
 | GitHub Apps | Installation tokens last an hour and can be limited to named repositories and a subset of permissions. Minting needs the App's private key | summary |
-| Cloudflare | Tokens created by API with policies per resource, an expiry, and an IP condition | summary |
+| Cloudflare | Tokens are created by API, with policies per resource, an expiry, and an IP condition | summary |
 | OpenAI | An admin key creates and deletes service accounts and project keys | summary |
-| Vercel | Tokens by API with an expiry, per account, team, or project | summary |
+| Vercel | Tokens are created by API, with an expiry, per account, team, or project | summary |
 | PlanetScale | Service tokens with a TTL | summary |
-| SendGrid, Resend, Neon, Supabase, Twilio | Keys by API with some scoping and no expiry, so the minter has to delete them | summary |
+| SendGrid, Resend, Neon, Supabase, Twilio | Keys are created by API, with some scoping and no expiry, so the minter has to delete them | summary |
 
 ### Providers with static keys only
 
@@ -104,19 +106,19 @@ revocation is then the provider's choice.
 | Postmark | Account and server tokens, with no expiry | summary |
 | Sentry | Tokens are created in the UI | summary |
 | Linear | Personal keys are created in the UI | summary |
-| Hugging Face | Fine-grained tokens that do not expire, with no creation API | summary |
+| Hugging Face | Fine-grained tokens that don't expire, with no creation API | summary |
 
 ## Standards
 
-All of this is from summaries.
+Everything in this section comes from summaries.
 
-- WIMSE, the IETF's workload identity work, has drafts and no RFCs.
+- WIMSE, the IETF's workload identity work, has drafts but no RFCs.
 - OAuth token exchange (RFC 8693) is stable, and OpenAI's exchange uses it.
 - DPoP (RFC 9449) and HTTP message signatures (RFC 9421) are RFCs. The survey
   found no SaaS API that uses them in place of API keys.
 - The identity assertion grant behind MCP's enterprise authorization is a
-  draft and needs a user session, so it does not cover unattended workloads.
-- Fly uses macaroons in production. Biscuit has a few production users.
+  draft. It needs a user session, so it doesn't cover unattended workloads.
+- Fly uses macaroons in production, and Biscuit has a few production users.
 
 ## Sources
 
