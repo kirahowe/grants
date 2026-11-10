@@ -150,15 +150,15 @@ quadrantChart
     quadrant-4 Bounded store
     Federate and inject: [0.18, 0.1]
     Remote mint and inject: [0.26, 0.26]
-    Federate with a handle: [0.18, 0.58]
-    Remote mint with a handle: [0.26, 0.74]
+    Federate by reference: [0.18, 0.58]
+    Remote mint by reference: [0.26, 0.74]
     Static test key and inject: [0.64, 0.12]
     Minting root on the laptop: [0.76, 0.6]
     dotenv file: [0.66, 0.9]
     age store and its key: [0.84, 0.78]
 ```
 
-| Source | Delivered as a handle | Delivered by injection |
+| Source | Delivered by reference | Delivered by injection |
 | --- | --- | --- |
 | Federate | Nothing is stored. The task's token can leak, and works until it expires | Nothing is stored, and the task has nothing to leak |
 | Mint, root in the remote minter | Nothing is on the laptop. The key can leak, and works until it's revoked | Nothing is on the laptop, and the task has nothing to leak |
@@ -231,7 +231,7 @@ evaluate code in its process. A Clojure dev server with an nREPL port on
 localhost is open to every local process, so "the task" includes whoever can
 reach that port.
 
-The attacker gets the task's grants. With handle delivery, they also hold
+The attacker gets the task's grants. With delivery by reference, they also hold
 credentials that work from anywhere until they expire. That's the blast
 radius the design accepts, and it replaces "the whole store, until somebody
 rotates."
@@ -293,7 +293,7 @@ The sandbox is a dependency, and fixing its escapes is up to its maintainers.
    agent with legitimate write access to a repository can push bad code.
 2. **No wall between unsandboxed tasks.** On a bare laptop, the task name on a
    request is only bookkeeping (see A5).
-3. **Portable credentials under handle delivery.** A leaked token works from
+3. **Portable credentials under delivery by reference.** A leaked token works from
    anywhere until it expires (see A6). Injection avoids this, at the cost of a
    proxy in the request path.
 4. **Coarse provider scopes.** Anthropic's narrowest scope is all inference in

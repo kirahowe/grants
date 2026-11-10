@@ -21,7 +21,7 @@ Keychain or behind a password-manager command, and any process running as the
 developer can call either one. The `secrets` threat model acknowledges this
 and puts that attacker out of scope (A6, B3).
 
-A coding agent is code running as the developer. If an agent goes wrong, the
+A coding agent is code running as the developer. If an agent goes rogue, the
 store is a single prize: the agent can fetch one key, read every value, and
 keep using those values until someone rotates them.
 
@@ -43,12 +43,12 @@ expire soon afterward.
    never holds it.
 4. **Keep config as data.** A credential reaches the application through its
    config, the same way `#secret/req` works today. Environment variables are
-   global mutable state, so nothing travels through them.
+   global mutable state, so don’t use them.
 5. **Commit the description of access.** The description contains no values,
    so there's nothing to encrypt, and reviewing an ordinary diff is the access
    review.
 6. **Ship the same artifact to every environment.** What differs between
-   environments is who the workload is, and that decides what each grant
+   environments is the workload identity, and that decides what each grant
    resolves to.
 7. **Add nothing to deploy or CI.** Those platforms already give the workload
    an identity, and the library uses it.
@@ -71,8 +71,12 @@ expire soon afterward.
   identity source. A laptop doesn't, so the local issuer fills that gap.
 - **Source** of a grant: where the grant's authority comes from. It's one of
   federation, a minted key, or a static key.
-- **Delivery** of a grant: how the task uses it. The task either receives a
-  handle that it dereferences, or a gateway injects the credential for it.
+- **Delivery** of a grant: how the task uses it. The task either receives the
+  credential by reference, or a gateway injects the credential for it.
+- **Reference**: what `#grant` returns in place of a credential, in the
+  Clojure sense of an identity whose value changes over time. Dereferencing it
+  gives the current credential, and the library renews the value behind it
+  before it lapses.
 
 ## What gets committed
 
@@ -147,9 +151,9 @@ The application's own config refers to grants by name:
 
 `#secret/req` returns a string, but `#grant` can't, because the credential
 behind it expires while the process is still running. Instead, `#grant`
-returns a handle. The application dereferences the handle whenever it needs
-the current value, and the library renews the credential before it lapses. A
-connection pool takes the handle as its credential supplier.
+returns a reference. The application derefs it whenever it needs the current
+value, and the library renews the credential before it lapses. A connection
+pool takes the reference as its credential supplier.
 
 ## Where a grant's authority comes from
 
@@ -188,10 +192,10 @@ source.
 
 ## How a task uses a grant
 
-A task uses a grant in one of two ways: it holds a handle to the credential,
-or a gateway injects the credential into its requests.
+A task uses a grant in one of two ways: it holds a reference to the
+credential, or a gateway injects the credential into its requests.
 
-### As a handle
+### By reference
 
 The task receives the credential and keeps it in memory. This suits
 application tasks, and protocols other than HTTP, such as a Postgres
@@ -203,7 +207,7 @@ sequenceDiagram
     participant L as grants library
     participant I as Identity source
     participant P as Provider
-    T->>L: deref the handle for :db/app
+    T->>L: deref the reference for :db/app
     L->>I: which task am I?
     I-->>L: signed identity, valid for minutes
     L->>P: present identity, ask for the grant's scope
@@ -297,11 +301,11 @@ flowchart LR
     SI --> P
 ```
 
-| Where | Identity source | New infrastructure |
-| --- | --- | --- |
-| Production | The platform's workload identity | None |
-| CI | The CI system's OIDC token | None |
-| Laptop | The local issuer | One signed binary |
+| Where               | Identity source                                                | New infrastructure               |
+| ------------------- | -------------------------------------------------------------- | -------------------------------- |
+| Production          | The platform's workload identity                               | None                             |
+| CI                  | The CI system's OIDC token                                     | None                             |
+| Laptop              | The local issuer                                               | One signed binary                |
 | Cloud agent sandbox | A delegation from the developer's issuer, bound to the session | Undecided, see [Agents](#agents) |
 
 ## The local issuer
@@ -383,7 +387,7 @@ grant delivered by injection. The gateway does the following:
   is only ever unsealed into the gateway's memory.
 
 A task reaches the gateway through a local base URL and a task token, both of
-which the `#grant` handle supplies. The token works only at this gateway and
+which the `#grant` reference supplies. The token works only at this gateway and
 only while the task is running, so it's worthless on any other machine. An
 agent in a sandbox reaches the gateway through the sandbox's own egress proxy.
 
@@ -457,7 +461,7 @@ A grant moves through the following states:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Requested: task derefs a handle or calls the gateway
+    [*] --> Requested: task derefs a reference or calls the gateway
     Requested --> Refused: task not in policy, or file not approved
     Requested --> AwaitingPresence: grant needs presence
     AwaitingPresence --> Refused: no fingerprint
@@ -471,11 +475,11 @@ stateDiagram-v2
 
 ## Providers today
 
-| Source | Providers | Stored secret |
-| --- | --- | --- |
-| Federate | AWS, Google Cloud, Anthropic, OpenAI, Tailscale, Postgres `cert` auth, SSH certificates; Stripe in private preview from AWS and Google Cloud only | None |
-| Mint | GitHub Apps, Cloudflare, Vercel, PlanetScale; SendGrid, Resend, Neon, Supabase, and Twilio with no expiry | A root in the remote minter |
-| Static | Stripe outside the preview, Postmark, Sentry, Linear, Hugging Face | One bounded key in the local gateway |
+| Source   | Providers                                                                                                                                         | Stored secret                        |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| Federate | AWS, Google Cloud, Anthropic, OpenAI, Tailscale, Postgres `cert` auth, SSH certificates; Stripe in private preview from AWS and Google Cloud only | None                                 |
+| Mint     | GitHub Apps, Cloudflare, Vercel, PlanetScale; SendGrid, Resend, Neon, Supabase, and Twilio with no expiry                                         | A root in the remote minter          |
+| Static   | Stripe outside the preview, Postmark, Sentry, Linear, Hugging Face                                                                                | One bounded key in the local gateway |
 
 Most of these rows come from search summaries. [Prior art](prior-art.md) marks
 which ones were read at the source.
