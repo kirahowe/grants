@@ -1,0 +1,32 @@
+```
+SANDBOX_RUNTIME=1
+--- proxy env
+no_proxy=localhost,127.0.0.1,::1,169.254.0.0/16,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+https_proxy=http://localhost:47821
+NO_PROXY=localhost,127.0.0.1,::1,169.254.0.0/16,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+HTTPS_PROXY=http://localhost:47821
+HTTP_PROXY=http://localhost:47821
+http_proxy=http://localhost:47821
+ALL_PROXY=http://localhost:47821
+all_proxy=http://localhost:47821
+--- curl direct P
+server-P-ok
+ rc=0
+--- curl direct Q
+ rc=7
+--- curl default P
+server-P-ok
+ rc=0
+--- nc P
+Connection to 127.0.0.1 port 47821 [tcp/*] succeeded!
+rc=0
+--- nc Q
+rc=1
+--- bb P
+server-P-ok
+
+--- bb Q
+ERR Operation not permitted
+--- curl outside (goes to proxy)
+000 rc=56
+```

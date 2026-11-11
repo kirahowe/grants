@@ -1,0 +1,2 @@
+{"sandbox":{"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,"autoAllowBashIfSandboxed":true,
+  "network":{"httpProxyPort":47821,"allowLocalBinding":false,"allowedDomains":[]}}}
