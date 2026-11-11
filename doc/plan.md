@@ -3,9 +3,10 @@
 Status: 2026-11-11. Nothing has been built.
 
 This document says what to build first, in what order, and how to tell each
-step worked. It replaces the handoff notes, whose open items were settled by
-a review on 2026-11-11. The [design](design.md) records the decisions, and
-[checks.md](checks.md) records the evidence.
+step worked. It replaces an earlier list of gaps to settle, which a review on
+2026-11-11 worked through. The [design](design.md) records the decisions,
+[checks.md](checks.md) records the evidence, and [handoff.md](handoff.md) has
+notes for whoever starts the build.
 
 ## Where things stand
 

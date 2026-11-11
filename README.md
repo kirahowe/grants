@@ -8,6 +8,7 @@ This project is still at the design stage and has no code yet.
 - [`doc/design.md`](doc/design.md) describes how it works.
 - [`doc/plan.md`](doc/plan.md) says what to build first and how to tell it
   works.
+- [`doc/handoff.md`](doc/handoff.md) has notes for whoever starts the build.
 - [`doc/protocol.md`](doc/protocol.md) specifies the file format, the control
   socket, and the gateway, with test cases in
   [`doc/vectors.md`](doc/vectors.md).
