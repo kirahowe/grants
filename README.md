@@ -8,6 +8,8 @@ This project is still at the design stage and has no code yet.
 - [`doc/design.md`](doc/design.md) describes how it works.
 - [`doc/threat-model.md`](doc/threat-model.md) explains what it protects,
   where the trust boundaries are, and what it leaves exposed.
+- [`doc/use-cases.md`](doc/use-cases.md) works the design through three real
+  applications.
 - [`doc/prior-art.md`](doc/prior-art.md) surveys what other products and
   providers do.
 
@@ -25,12 +27,13 @@ only that task and expires soon afterward.
 
 The application reads a credential through its config, using a `#grant`
 reader literal, so no environment variable is involved. Production and CI use
-the workload identity that their platform already provides. A laptop has no
-such identity, so a small local issuer, with its keys in the Secure Enclave,
-supplies one.
+the workload identity that their platform provides, where it provides one. A
+laptop has no such identity, so a small local issuer, with its keys in the
+Secure Enclave, supplies one.
 
 Some providers offer only long-lived API keys. For those, a local gateway
-holds one bounded test-mode key and attaches it to requests, so the task never
-receives the key.
+holds one bounded key and attaches it to requests, so the task never receives
+the key. The application's own stored data, such as a bank token, is wrapped
+with a key that stays in the issuer.
 
 `grants` is a working title.
