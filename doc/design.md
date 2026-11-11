@@ -56,7 +56,7 @@ expire soon afterward.
    credentials is worth more than any key it replaces.
 9. **Run agents in a sandbox.** Outside a sandbox, an agent is effectively the
    developer, and nothing on the laptop can tell the two apart.
-10. **Degrade per platform, and say so.** Apple hardware gets the complete
+10. **Degrade per platform.** Apple hardware supports the most complete
     design. Every other platform gets as much of it as its hardware and OS
     allow. When a protection is missing, the issuer falls back to the next
     best one, and the cost of that fallback is written down rather than
@@ -388,14 +388,14 @@ Enclave. macOS on Apple hardware is the reference platform and provides all
 of them. On other platforms the issuer provides what the hardware and OS
 allow, and falls back where they don't.
 
-| Protection | macOS | Windows | Linux | When it's missing |
-| --- | --- | --- | --- | --- |
-| Signing keys can't be exported | Secure Enclave | TPM 2.0 | TPM 2.0 | Use a security key such as a YubiKey. See [open question 6](#open-questions) for machines with neither |
-| Only the issuer binary can use its keys | Keychain access tied to the code signature | No known equivalent | No known equivalent | Code running as the developer can use the keys directly and skip the issuer's checks. Unsandboxed code then has what a tampered issuer has (threat model A7) |
-| Other processes can't attach to the issuer | Hardened runtime | No known option for ordinary applications | Partial, through Yama `ptrace_scope` | Code running as the developer can read unsealed keys and credentials from the issuer's memory |
-| The issuer can identify the peer process | Unix socket peer lookup | Named-pipe client process ID | `SO_PEERCRED` | No fallback. Task identification depends on it |
-| Presence | Touch ID on the key | Windows Hello | No standard | Use the touch requirement on a security key |
-| The issuer's own approval window | Native window | Native window | Native window | Separate work on each OS |
+| Protection                                 | macOS                                      | Windows                                   | Linux                                | When it's missing                                                                                                                                            |
+| ------------------------------------------ | ------------------------------------------ | ----------------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Signing keys can't be exported             | Secure Enclave                             | TPM 2.0                                   | TPM 2.0                              | Use a security key such as a YubiKey. See [open question 5](#open-questions) for machines with neither                                                       |
+| Only the issuer binary can use its keys    | Keychain access tied to the code signature | No known equivalent                       | No known equivalent                  | Code running as the developer can use the keys directly and skip the issuer's checks. Unsandboxed code then has what a tampered issuer has (threat model A7) |
+| Other processes can't attach to the issuer | Hardened runtime                           | No known option for ordinary applications | Partial, through Yama `ptrace_scope` | Code running as the developer can read unsealed keys and credentials from the issuer's memory                                                                |
+| The issuer can identify the peer process   | Unix socket peer lookup                    | Named-pipe client process ID              | `SO_PEERCRED`                        | No fallback. Task identification depends on it                                                                                                               |
+| Presence                                   | Touch ID on the key                        | Windows Hello                             | No standard                          | Use the touch requirement on a security key                                                                                                                  |
+| The issuer's own approval window           | Native window                              | Native window                             | Native window                        | Separate work on each OS                                                                                                                                     |
 
 Everything outside the macOS column is on the list of
 [claims to check](#claims-to-check).
@@ -530,33 +530,49 @@ CI still has a use for a check that needs no identity: one that confirms the
 file is valid and that the application's config refers only to grants that
 exist.
 
+## Decisions
+
+**Language and shape** (2026-11-11). `grants` is a Clojure library backed by
+a native daemon written in Go. The daemon is the issuer, the gateway, and the
+launcher. It can't run on the JVM: it needs hardware key stores and a code
+signature, and the threat model's defence against a tampered issuer (A7) asks
+for a small codebase with few dependencies. A documented socket protocol and
+the `grants.edn` format form the language-neutral boundary between the
+daemon and its clients, so clients in other languages can follow later.
+Injection already works from any language, because a task only needs a base
+URL and a task token.
+
+Go was chosen over Rust because its TPM support is pure Go, while Rust's main
+TPM crate wraps a C library, and both need native code for the Secure Enclave.
+Rust could reliably wipe keys from memory, but on macOS the code-signature
+boundary already keeps other processes out of the issuer's memory. A Clojure
+daemon built with GraalVM `native-image` would have shared code with the
+library, but it would reach the Secure Enclave and TPM through hand-written
+FFM bindings, where Go has existing libraries.
+
 ## Open questions
 
-1. **Language.** The issuer needs the Secure Enclave and a code signature,
-   which points to Swift, or to Go or Rust with bindings. The protocol could
-   be language-neutral, with a Clojure client first. Should this be a Clojure
-   library with a helper binary, or a general tool with a Clojure binding?
-2. **Third-party tools.** `psql`, `aws`, `gh`, `git`, and the agent harness
+1. **Third-party tools.** `psql`, `aws`, `gh`, `git`, and the agent harness
    itself don't read an EDN config. Several of them support helpers that fetch
    a credential on demand, such as git credential helpers and AWS
    `credential_process`, and those fit the model. For tools that read only
    environment variables, is an adapter scoped to one child process
    acceptable, or are those tools out of scope?
-3. **The remote minter.** Where does it run, and who operates it for a solo
+2. **The remote minter.** Where does it run, and who operates it for a solo
    developer?
-4. **Production that isn't federated yet.** Principle 7 assumes that the
+3. **Production that isn't federated yet.** Principle 7 assumes that the
    platform provides a workload identity. An application that still reads
    static secrets in production needs a migration path.
-5. **Parity.** Injection gives a task a local base URL that production doesn't
+4. **Parity.** Injection gives a task a local base URL that production doesn't
    use. Is that acceptable for application tasks, or should injection be for
    agents only?
-6. **Machines with no hardware key store.** Linux VMs and WSL often have no
+5. **Machines with no hardware key store.** Linux VMs and WSL often have no
    TPM, and not everyone has a security key. Should the issuer run with a
    software key and an explicit warning, or refuse to run?
-7. **Decoy credentials.** With no real secrets on disk, a credential that an
+6. **Decoy credentials.** With no real secrets on disk, a credential that an
    agent finds in `.env` or `~/.aws` could be a planted decoy, so any use of
    one would be a real alarm rather than a false positive. Is that in scope?
-8. **The name.** `grants` is a working title.
+7. **The name.** `grants` is a working title.
 
 ## Claims to check
 
@@ -585,6 +601,9 @@ The following claims come from memory or from search summaries:
 - Windows Hello can require a biometric for every use of a key.
 - A YubiKey's PIV applet holds P-256 keys and can require a touch for every
   use.
+- `google/go-tpm` talks to the TPM directly, with no C library.
+- Smallstep's `go.step.sm/crypto` has working KMS backends for the macOS
+  Secure Enclave and for TPMs.
 - GitHub App keys must be RSA, which the Secure Enclave can't hold.
 - A JDBC Postgres connection can take its client certificate and key from
   memory, without a file on disk.
