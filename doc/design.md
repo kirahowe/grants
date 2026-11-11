@@ -54,8 +54,11 @@ expire soon afterward.
    an identity, and the library uses it.
 8. **Keep minting roots off laptops.** A credential that can create other
    credentials is worth more than any key it replaces.
-9. **Run agents in a sandbox.** Outside a sandbox, an agent is effectively the
-   developer, and nothing on the laptop can tell the two apart.
+9. **Sandbox agents by degrees.** Outside a sandbox, an agent is effectively
+   the developer, and nothing on the laptop can tell the two apart. Grants
+   still leaves that agent no stored secret to read, so trying it doesn't
+   depend on a sandbox. Each sandbox level adds a protection, and an agent
+   starts at the level that costs least to turn on.
 10. **Degrade per platform.** Apple hardware supports the most complete
     design. Every other platform gets as much of it as its hardware and OS
     allow. When a protection is missing, the issuer falls back to the next
@@ -466,16 +469,36 @@ open question.
 
 ## Agents
 
-An agent task runs in a sandbox that provides the following:
+An agent task doesn't need a sandbox. Each sandbox level closes more of the
+routes around its grants:
 
-- No read access to the home directory outside the project.
-- Network egress only through the gateway.
-- No access to the REPL ports of other tasks.
-- No way to run the launcher for another task.
+| Level                 | What it encloses                                        | What it adds                                                                                                                                   |
+| --------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| No sandbox            | Nothing                                                 | Nothing. The agent is effectively the developer                                                                                                |
+| Command sandbox       | The agent's shell commands and the processes they start | Those commands can't read the listed credential files, send traffic past the gateway, or reach another task's REPL port or the issuer's socket |
+| Whole-harness sandbox | Everything the harness runs                             | The same limits on the harness's own tools, MCP servers, and hooks                                                                             |
 
-Without these restrictions, an agent can read the developer's own logins or
-start any task, and the grants file limits nothing. The threat model treats an
-unsandboxed agent as the developer.
+`grants run agent` starts at the command sandbox. Claude Code and Codex each
+ship one, so this level needs no extra software. The launcher starts the
+harness with sandbox settings generated from `grants.edn`, so turning the
+sandbox on isn't a manual step. The generated settings do the following:
+
+- Deny reads of a list of known credential files, such as SSH keys and the
+  stored logins of `gh` and `aws`. Where a tool keeps its config beside its
+  credential, the list names the credential file and leaves the directory
+  readable.
+- Allow egress only to the gateway.
+- Keep other localhost ports and Unix sockets closed. That covers other
+  tasks' REPL ports. It also covers the issuer's socket, which the launcher
+  needs to start a task.
+- Turn off the harness's option to run a command outside the sandbox.
+
+Denying reads of the whole home directory outside the project is an optional
+tightening of this level. It needs a re-allow list for the project's
+toolchain, covering config files and dependency caches.
+
+The threat model's [sandbox levels](threat-model.md#sandbox-levels) section
+lists what each level leaves open.
 
 Today, giving a cloud agent access usually means pasting long-lived keys into
 the platform's settings. Here's a sketch of how to do it without pasting a
@@ -596,6 +619,25 @@ in `.env` or `~/.aws` could be a planted decoy, so any use of one would be a
 real alarm. That only works once no real secrets are on disk, and existing
 tools such as `canaryhook` already cover the idea.
 
+**Sandbox levels** (2026-11-11). A sandbox is optional, and `grants run agent`
+starts at the harness's own command sandbox with a deny list of credential
+files. Requiring more would put a migration in front of anyone trying grants.
+
+Denying the whole home directory was tried on macOS, with a Seatbelt profile
+that made it unreadable outside the project. `git` and `jj log` failed on
+`~/.gitconfig`, `clojure` wouldn't start, `uv` couldn't open its cache, and
+`gh` and `docker` couldn't read their config. An interactive `zsh` came up
+without the functions from its startup file, and `jj` reported an empty user
+name with no error. Everything that broke was config or a dependency cache, so
+the fix is a re-allow list for each toolchain. Building and maintaining those
+lists is the cost, which is why whole-home denial is a tightening and not the
+default.
+
+The command sandbox is the starting level because Claude Code and Codex
+already ship one. It encloses shell commands only, and the threat model
+records what that leaves open. Without any sandbox, grants still improves on a
+stored key, because an agent finds no stored secret that it can read.
+
 ## Open questions
 
 1. **The remote minter.** Where does it run, and who operates it for a solo
@@ -612,7 +654,13 @@ tools such as `canaryhook` already cover the idea.
 4. **Sealing a static key.** The design doesn't yet say how a static key gets
    into the gateway. One obvious shape is `grants seal :payments/test`,
    reading the key from a hidden prompt.
-5. **The name.** `grants` is a working title. Check that it's free on Clojars
+5. **What the starting sandbox level has to allow.** Fetching a dependency
+   needs a registry host and a writable cache, and `git` over SSH doesn't go
+   through an HTTP proxy. Each exception reopens a route: an allowed host is a
+   way out for data, and a cache the agent can write to is a way into whatever
+   task loads from it next. Which exceptions do the generated settings make by
+   default?
+6. **The name.** `grants` is a working title. Check that it's free on Clojars
    and as a Go module path.
 
 ## Claims to check
@@ -649,6 +697,14 @@ The following claims come from memory or from search summaries:
 - A JDBC Postgres connection can take its client certificate and key from
   memory, without a file on disk.
 - Every provider row in [prior art](prior-art.md) that's marked "summary".
+- Claude Code's command sandbox and Codex's permission profiles can each deny
+  reads of listed paths, limit egress to listed hosts, and keep localhost
+  ports and Unix sockets closed unless they're listed. Each product's
+  documentation says so, as read on 2026-11-11. Neither was tested.
+- Sandbox settings passed to a harness at launch can't be loosened by
+  settings in the repository.
+- Codex's network rules can allow one localhost port without allowing the
+  rest.
 
 ## First spike
 
