@@ -14,7 +14,11 @@ The following table lists each asset, where it lives, and what protects it.
 | The owner's console login at each provider | With the owner: a passkey or hardware key | Nothing in this tool. It's the root of trust |
 | Minting roots, such as a GitHub App key or an admin API key | The remote minter | They never reach a laptop |
 | Issuer signing keys | The Secure Enclave | Hardware. They can't be exported |
-| Sealed static keys | The laptop's disk, encrypted to an enclave key | Only the signed issuer can get the enclave to open them. They're test-mode keys by default |
+| Sealed static keys | The laptop's disk, encrypted to an enclave key | Only the signed issuer can get the enclave to open them. Each carries a bound at its provider: test mode, a spend cap, or read-only |
+| Sealed live keys | The laptop's disk, encrypted to the presence key | The same, plus a fingerprint each time a task that uses one starts, and an opt-in on that machine |
+| Wrapping keys for application data | The laptop's disk, encrypted to an enclave key | Only the signed issuer can use them. A task gets `wrap` and `unwrap`, never the key |
+| Wrapped application data, such as bank tokens | The application's database and its backups | It opens only through the issuer on the machine that wrapped it, or with the recovery key |
+| A person's login session at the access proxy | The browser | Nothing in this tool. The proxy's policy and session length |
 | Issued credentials | The memory of the gateway or of the task | Narrow scope and a short life |
 | Identity tokens | In flight between the issuer and a provider | They last minutes, are bound to one audience, and are single use where the provider checks |
 | Policy: `grants.edn` and each provider's trust rules | The repository and the provider | Review on a protected branch, and the owner's login |
@@ -44,6 +48,10 @@ This has three consequences:
   at each provider and registers the new one.
 - A stolen console login is out of scope. Protect the login with a passkey or
   a hardware key, and keep its session out of reach of agents.
+
+The minter adds one more login to this list. It runs as a Cloudflare Worker,
+and whoever controls that Cloudflare account can deploy code that uses the
+minter's roots. That login needs the same protection as a provider's.
 
 ## Trust boundaries
 
@@ -216,7 +224,13 @@ quadrantChart
 | Federate | Nothing is stored. The task's token can leak, and works until it expires | Nothing is stored, and the task has nothing to leak |
 | Mint, root in the remote minter | Nothing is on the laptop. The key can leak, and works until it's revoked | Nothing is on the laptop, and the task has nothing to leak |
 | Mint, root on the laptop | Not allowed | Not allowed |
-| Static key | Not allowed, because this is just a `.env` file | One bounded key on the laptop, and the task has nothing to leak |
+| Static key, bounded | Not allowed, because this is just a `.env` file | One bounded key on the laptop, and the task has nothing to leak |
+| Static key, live | Not allowed | One live key on the laptop, unsealed only while its task runs, and the task has nothing to leak |
+
+Wrapped application data is a third case. The stored copies are worth
+nothing without the issuer, and the running task can unwrap all of them. A
+thief who takes the database file gains nothing, and one who takes over the
+task gains every token in it.
 
 A minting root can create other credentials, so it's worth more than any key
 it replaces. An injected static test key compares well against a minting root
@@ -232,10 +246,13 @@ it takes to widen the grant.
 | --- | --- | --- |
 | Federate | The provider, with rules created at setup | The owner's console login |
 | Mint | The remote minter, reading `grants.edn` from the protected main branch | A merged pull request |
+| Mint, for a person in a browser | The minter, for what a login gets. The access proxy, for who can log in | A merged pull request, or a change to the proxy's policy |
 | Static | The local gateway, reading the pinned `grants.edn` | The developer's approval in the issuer's own window, with Touch ID |
+| Static, live | The same, and only on a machine that opted in | The same approval. Opting in a new machine takes its owner's fingerprint there |
+| Wrap | The issuer, which serves any task that lists the grant | The developer's approval in the issuer's own window |
 
-The third row is the weakest, which is one more reason that static keys are
-test-mode keys by default.
+The static rows are the weakest, which is why a static key has to be
+bounded, and why a live one needs an opt-in that the repository can't give.
 
 ## Threats in scope
 
@@ -252,6 +269,7 @@ flowchart LR
     A6["A6 Holder of a leaked credential"] --> R6["One scope until it expires"]
     A7["A7 Tampered issuer"] --> R7["Every grant that needs no presence,<br/>and the sealed static keys"]
     A8["A8 Compromised minter"] --> R8["Its minting roots"]
+    A9["A9 Holder of a person's browser session"] --> R9["That person's grants, an hour at a time"]
 ```
 
 ### A1. A reader of the repository
@@ -265,6 +283,11 @@ the manifest's key paths are in `secrets`.
 Backups, synced dotfiles, and disk images copy files without anyone deciding
 to share them. The copies contain no credential and no exportable key. A
 sealed static key opens only inside the enclave of the machine that sealed it.
+
+The same holds for wrapped application data. A copy of the database carries
+bank tokens that only the issuer on the original machine can open. A grant
+that names a recovery recipient adds one more way in, which is the private
+half of that key, kept offline.
 
 ### A3. An agent in a sandbox
 
@@ -294,12 +317,24 @@ credentials that work from anywhere until they expire. That's the blast
 radius the design accepts, and it replaces "the whole store, until somebody
 rotates."
 
+Two kinds of grant give this attacker more than a short-lived credential. A
+task with a wrap grant can unwrap every stored token while it runs, and a
+token for a bank link doesn't expire. A task with a live static key can make
+every call its `:allow` rules permit against real data, though it never
+holds the key. For an application that syncs bank accounts, those two
+together are read access to the accounts for as long as the task is
+compromised.
+
 ### A5. Unsandboxed code running as the developer
 
 Unsandboxed code can't export an issuer key, open a sealed static key, pass a
 presence check, or widen the pinned policy. But it can run the launcher or
 declare a task over the issuer's socket, so it can use every grant that
 doesn't need presence, and it can read the developer's own logins.
+
+A live key changes this in one way. Starting a task that uses one takes a
+fingerprint, so unsandboxed code can't start it. It can still reach into
+such a task once the owner has started it, as A4 describes.
 
 An agent with no sandbox is in this position. That's still better than an
 agent beside a stored key: it finds no stored secret that it can read, and a
@@ -316,8 +351,10 @@ source address.
 ### A7. A tampered issuer
 
 A malicious update or a compromised dependency of the issuer can sign an
-identity for any task and open the sealed static keys. It can't use the
-presence key without a fingerprint, and it holds no minting root. The defence
+identity for any task, open the sealed static keys, and use every wrapping
+key. It can't use the presence key without a fingerprint, so a sealed live
+key stays closed until its owner next starts a task that uses it. From then
+on the tampered issuer has that key too. It holds no minting root. The defence
 is the ordinary one: a small codebase with few dependencies, signed releases,
 and updates that the developer chooses to install.
 
@@ -327,6 +364,21 @@ The minter holds minting roots, so an attacker who compromises it can mint
 whatever those roots allow. That makes the minter the most valuable target in
 the design. It sits off the laptop, where no agent runs, and each root should
 belong to a dev-only provider account so that its reach is bounded.
+
+A root that serves a person can't be dev-only. A GitHub App that publishes a
+website has write access to the real repositories. What bounds it is the
+App's installation, which names the repositories it can touch at all.
+
+### A9. The holder of a person's browser session
+
+Someone with a person's unlocked device, or a copy of their session at the
+access proxy, can ask the minter for that person's grants. Each token lasts
+an hour, and the attacker can keep asking until the session ends or is
+revoked.
+
+That is less than the same device gives up today. A personal access token
+in the browser's storage works from anywhere until it expires, and revoking
+it means finding it at the provider. A session is revoked at the proxy.
 
 ## Out of scope
 
@@ -379,13 +431,28 @@ leaves outside is in scope, and [Sandbox levels](#sandbox-levels) lists it.
 8. **Recovery and scale.** A new laptop means registering a new issuer with
    every provider, and a team with many laptops has to register many issuers.
    A shared team issuer would fix that, but it hasn't been designed.
-9. **Production static keys.** This design has no place for them on a laptop.
-   If an application still depends on one in production, the key stays in the
-   production platform's own store.
+9. **Live keys on a laptop.** An application whose only production is the
+   laptop can keep a live static key there, sealed and behind a fingerprint.
+   The key is then one tampered issuer or one compromised task away from
+   use, which a test key never is. Elsewhere a production static key stays
+   in the production platform's own store, and this design does nothing to
+   protect that store.
 10. **A partial sandbox.** At the level where `grants run agent` starts, the
     harness's own tools run outside the sandbox, and a credential file that's
     missing from the deny list stays readable (see
     [Sandbox levels](#sandbox-levels)).
+11. **A bound is often only a statement.** The gateway can check that a key
+    is a test key when the provider gives test keys their own host or
+    prefix. It can't check a spend cap or a read-only restriction, so those
+    bounds are as true as what the owner typed.
+12. **Wrapped data and a lost machine.** Without a recovery recipient,
+    wrapped data is gone when the machine is. With one, the recovery key is
+    a long-lived secret again, and the design only asks that it stay
+    offline.
+13. **A task token in a URL.** The gateway's base URL contains the task
+    token, and HTTP clients log URLs. The token works only on this machine
+    and only while the task runs, so a logged copy is useful to code that's
+    already in position A5 and to nothing else.
 
 ## How to decide what to change
 
