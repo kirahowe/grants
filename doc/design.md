@@ -75,7 +75,8 @@ expire soon afterward.
   asking?" with a short signed statement. Production and CI already have an
   identity source. A laptop doesn't, so the local issuer fills that gap.
 - **Source** of a grant: where the grant's authority comes from. It's one of
-  federation, a minted key, or a static key.
+  federation, a minted key, or a static key. In production, a grant can also
+  read from the platform's own secret store (see [Decisions](#decisions)).
 - **Delivery** of a grant: how the task uses it. The task either receives the
   credential by reference, or a gateway injects the credential for it.
 - **Reference**: what `#grant` returns in place of a credential, in the
@@ -390,7 +391,7 @@ allow, and falls back where they don't.
 
 | Protection                                 | macOS                                      | Windows                                   | Linux                                | When it's missing                                                                                                                                            |
 | ------------------------------------------ | ------------------------------------------ | ----------------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Signing keys can't be exported             | Secure Enclave                             | TPM 2.0                                   | TPM 2.0                              | Use a security key such as a YubiKey. See [open question 5](#open-questions) for machines with neither                                                       |
+| Signing keys can't be exported             | Secure Enclave                             | TPM 2.0                                   | TPM 2.0                              | Use a security key such as a YubiKey. See [Decisions](#decisions) for machines with neither                                                                  |
 | Only the issuer binary can use its keys    | Keychain access tied to the code signature | No known equivalent                       | No known equivalent                  | Code running as the developer can use the keys directly and skip the issuer's checks. Unsandboxed code then has what a tampered issuer has (threat model A7) |
 | Other processes can't attach to the issuer | Hardened runtime                           | No known option for ordinary applications | Partial, through Yama `ptrace_scope` | Code running as the developer can read unsealed keys and credentials from the issuer's memory                                                                |
 | The issuer can identify the peer process   | Unix socket peer lookup                    | Named-pipe client process ID              | `SO_PEERCRED`                        | No fallback. Task identification depends on it                                                                                                               |
@@ -550,29 +551,69 @@ daemon built with GraalVM `native-image` would have shared code with the
 library, but it would reach the Secure Enclave and TPM through hand-written
 FFM bindings, where Go has existing libraries.
 
+**Third-party tools** (2026-11-11). `psql`, `aws`, `gh`, `git`, and the agent
+harness don't read an EDN config, so each one uses whatever hook it already
+has:
+
+- A tool that supports an on-demand credential helper gets one. Examples are
+  git credential helpers, AWS `credential_process`, Docker credential helpers,
+  and kubectl exec plugins.
+- A tool whose base URL can point at the gateway, such as an agent harness,
+  gets injection. The only thing it holds is a task token that works at this
+  gateway alone.
+- For a tool that reads only environment variables, `grants run <task> --
+  <command>` sets them for that one child process. This breaks principle 4,
+  narrowly, and it's a documented fallback in the spirit of principle 10.
+- `psql` with `cert` auth reads its certificate and key from files, so it gets
+  a private temporary file that lasts only as long as the task. That's
+  another explicit trade-off.
+
+**The remote minter is deferred** (2026-11-11). A project starts without one,
+and a provider that can only mint falls back to a static test key or stays out
+of scope. When GitHub matters, Octo STS is the model to follow, or to reuse.
+
+**Production that isn't federated yet** (2026-11-11). In production, `#grant`
+can resolve by reading a static secret from the platform's own secret store,
+using the platform's workload identity to read it. The application's config
+stays the same while each provider moves to federation. This is a fourth
+source, used only in production, alongside federate, mint, and static.
+
+**Parity** (2026-11-11). The `#grant` reference supplies the base URL, so an
+application that reads its URL from config reaches the gateway locally and the
+real endpoint in production, with no code changes. Budgets and operation rules
+apply only locally, and that difference is accepted. Application tasks get
+delivery by reference by default. Injection is for agents and static keys.
+
+**Machines with no hardware key store** (2026-11-11). Linux VMs and WSL often
+have no TPM, and not everyone has a security key. On such a machine the issuer
+can run with a software key, but only when per-machine config opts in.
+`grants.edn` can't opt in. `grants doctor` and every issuance warn that the
+key is in software, and grants that need presence are refused on that
+machine, because a software key can't prove presence.
+
+**Decoy credentials are deferred** (2026-11-11). A credential an agent finds
+in `.env` or `~/.aws` could be a planted decoy, so any use of one would be a
+real alarm. That only works once no real secrets are on disk, and existing
+tools such as `canaryhook` already cover the idea.
+
 ## Open questions
 
-1. **Third-party tools.** `psql`, `aws`, `gh`, `git`, and the agent harness
-   itself don't read an EDN config. Several of them support helpers that fetch
-   a credential on demand, such as git credential helpers and AWS
-   `credential_process`, and those fit the model. For tools that read only
-   environment variables, is an adapter scoped to one child process
-   acceptable, or are those tools out of scope?
-2. **The remote minter.** Where does it run, and who operates it for a solo
+1. **The remote minter.** Where does it run, and who operates it for a solo
    developer?
-3. **Production that isn't federated yet.** Principle 7 assumes that the
-   platform provides a workload identity. An application that still reads
-   static secrets in production needs a migration path.
-4. **Parity.** Injection gives a task a local base URL that production doesn't
-   use. Is that acceptable for application tasks, or should injection be for
-   agents only?
-5. **Machines with no hardware key store.** Linux VMs and WSL often have no
-   TPM, and not everyone has a security key. Should the issuer run with a
-   software key and an explicit warning, or refuse to run?
-6. **Decoy credentials.** With no real secrets on disk, a credential that an
-   agent finds in `.env` or `~/.aws` could be a planted decoy, so any use of
-   one would be a real alarm rather than a false positive. Is that in scope?
-7. **The name.** `grants` is a working title.
+2. **Who does the exchange on a laptop.** The diagrams show the library
+   exchanging the identity with the provider. If the Go daemon did every
+   laptop exchange instead, the library would need exchange code only for
+   production and CI, and less provider code would exist in two languages.
+   The application's code is the same either way.
+3. **Editor jack-in.** CIDER and Calva start the REPL's JVM themselves, but
+   the issuer only recognises processes that the launcher started. How does a
+   REPL started from an editor become a task? A custom jack-in command that
+   goes through `grants run` is one answer.
+4. **Sealing a static key.** The design doesn't yet say how a static key gets
+   into the gateway. One obvious shape is `grants seal :payments/test`,
+   reading the key from a hidden prompt.
+5. **The name.** `grants` is a working title. Check that it's free on Clojars
+   and as a Go module path.
 
 ## Claims to check
 
