@@ -18,7 +18,7 @@ The following table lists each asset, where it lives, and what protects it.
 | Issued credentials | The memory of the gateway or of the task | Narrow scope and a short life |
 | Identity tokens | In flight between the issuer and a provider | They last minutes, are bound to one audience, and are single use where the provider checks |
 | Policy: `grants.edn` and each provider's trust rules | The repository and the provider | Review on a protected branch, and the owner's login |
-| The developer's own logins: CLI tokens, SSH keys, browser sessions | The home directory and the keychain | Nothing in this tool. The sandbox keeps agents away from them |
+| The developer's own logins: CLI tokens, SSH keys, browser sessions | The home directory and the keychain | Nothing in this tool. A sandbox keeps agents away from the files it denies |
 
 ## The root of trust
 
@@ -63,7 +63,7 @@ flowchart TB
             ISS["Issuer and gateway<br/>unsealed keys exist only in this memory"]
         end
         subgraph sandbox["Boundary 3: sandbox"]
-            AG["Agent task"]
+            AG["Agent task<br/>its shell commands, or the whole harness"]
         end
         subgraph nob["No boundary"]
             TASK["Unsandboxed tasks<br/>dev server, REPL"]
@@ -95,7 +95,12 @@ claims to check. Unsealed static keys and injected credentials exist only in
 that binary's memory.
 
 **Sandbox.** An agent in a sandbox can reach the gateway and its own working
-copy. The sandbox is someone else's software, and this design depends on it.
+copy. The sandbox is someone else's software, and how much of the agent it
+encloses depends on its level. The command sandbox that Claude Code and Codex
+each ship encloses the agent's shell commands. The harness stays in the zone
+with no boundary, along with its file tools, web fetches, MCP servers, and
+hooks. A sandbox around the whole harness encloses all of them.
+[Sandbox levels](#sandbox-levels) lists what each level leaves open.
 
 **No boundary.** Everything else that runs as the developer shares one zone:
 dev servers, REPLs, editors, unsandboxed agents, and command-line tools with
@@ -118,7 +123,7 @@ flowchart LR
     AG["Agent in a sandbox"]
     AG -->|allowed| GW["Gateway:<br/>its own task's grants"]
     AG -->|allowed| WS["Project working copy"]
-    AG -. blocked .-> HOME["Home directory:<br/>CLI logins, SSH keys, cloud caches"]
+    AG -. blocked .-> HOME["The developer's own logins:<br/>CLI tokens, SSH keys, cloud caches"]
     AG -. blocked .-> NET["Direct network egress"]
     AG -. blocked .-> REPL["REPL ports of other tasks"]
     AG -. blocked .-> RUN["The launcher, for other tasks"]
@@ -134,10 +139,49 @@ Each blocked route in the diagram is a way to get around the grants:
 - A REPL port gives code execution inside another task, and whoever can
   evaluate code in a process has that task's grants.
 - The launcher starts tasks, so an agent that can run it has every grant that
-  doesn't need presence.
+  doesn't need presence. The launcher reaches the issuer through a Unix
+  socket, so a sandbox closes this route by keeping that socket out of reach.
 
-The claims this document makes about agents hold only inside a sandbox that
-closes all of these routes.
+### Sandbox levels
+
+A sandbox is optional. How many of the routes are closed, and for how much of
+the agent, depends on the sandbox's level.
+
+| Level | What it encloses | What stays open |
+| --- | --- | --- |
+| No sandbox | Nothing | Every route. The agent is in position A5 |
+| Command sandbox, where `grants run agent` starts | The agent's shell commands and the processes they start | Credential files missing from the deny list, and everything the harness does outside a shell command |
+| Command sandbox with the home directory denied | The same | Everything the harness does outside a shell command, and the paths re-allowed for the toolchain |
+| Whole-harness sandbox | Everything the harness runs | Only what its settings allow |
+
+`grants run agent` starts the harness with its command sandbox turned on, and
+with settings that close the four routes for shell commands. Reads of a list
+of known credential files are denied, egress goes only to the gateway, and
+other localhost ports and Unix sockets stay closed. Claude Code and Codex
+document settings for each of these, but none has been tested here.
+
+Denying the whole home directory is an optional tightening. It isn't where an
+agent starts, because it breaks ordinary tooling: with the home directory
+unreadable, `git` fails on `~/.gitconfig` and `clojure` won't start. Each
+toolchain needs its config files and dependency caches re-allowed.
+
+A command sandbox doesn't enclose the harness. In Claude Code, the file tools,
+web fetches, MCP servers, and hooks all run outside it, and the Codex
+documentation describes its sandbox in terms of the commands it spawns. An
+agent steered by prompt injection can use those tools as well as the shell.
+The generated settings also give the harness permission rules that deny its
+file tools the same credential files. The harness enforces those rules itself,
+with no operating-system boundary behind them, and they don't reach an MCP
+server.
+
+Both kinds of list have a weakness. A deny list closes only the files that
+someone thought to put on it. A re-allow list can open a route into other
+tasks: if the agent can write to a dependency cache, whatever task loads code
+from that cache next runs what the agent left there.
+
+The claims this document makes about agents hold only for the part of an agent
+that its sandbox encloses, and only for the routes that the sandbox's level
+closes.
 
 ## What a thief gains
 
@@ -227,6 +271,11 @@ can use its own task's grants through the gateway while the task is running.
 When its grants are delivered by injection, it holds no provider credential,
 so it has nothing to carry out.
 
+This describes the part of the agent that the sandbox encloses. Under a
+command sandbox, that's its shell commands. What the harness does through its
+own tools, MCP servers, and hooks is outside, and
+[Sandbox levels](#sandbox-levels) lists what that leaves open.
+
 The agent can still misuse its grants within their scope. Operation rules and
 budgets at the gateway narrow that, and they're the only control this design
 has over what a grant is used for.
@@ -248,8 +297,13 @@ rotates."
 Unsandboxed code can't export an issuer key, open a sealed static key, pass a
 presence check, or widen the pinned policy. But it can run the launcher, so it
 can use every grant that doesn't need presence, and it can read the
-developer's own logins. This position is the reason agents belong in a
-sandbox.
+developer's own logins.
+
+An agent with no sandbox is in this position. That's still better than an
+agent beside a stored key: it finds no stored secret that it can read, and a
+credential it takes from a running task stops working when it expires or is
+revoked. The developer's own logins are as exposed as they were before grants,
+and that's the reason to give an agent a sandbox.
 
 ### A6. The holder of a leaked credential
 
@@ -292,6 +346,8 @@ that it does.
 ### B4. A sandbox that leaks
 
 The sandbox is a dependency, and fixing its escapes is up to its maintainers.
+This covers escapes from what a sandbox says it encloses. What a sandbox level
+leaves outside is in scope, and [Sandbox levels](#sandbox-levels) lists it.
 
 ## Known gaps
 
@@ -309,8 +365,9 @@ The sandbox is a dependency, and fixing its escapes is up to its maintainers.
    presence should stay rare. The issuer also has to show what's being
    approved in its own window, because the operating system's Touch ID prompt
    can't show a diff, and an agent might control the terminal.
-6. **Unmanaged developer logins.** The sandbox keeps agents away from the
-   developer's own logins, but the tool does nothing else about them. Bringing
+6. **Unmanaged developer logins.** A sandbox keeps agents away from the
+   developer's own logins as far as its level goes, and the tool does nothing
+   else about them. Bringing
    those tools under the issuer, through credential helpers and SSH
    certificates, is future work.
 7. **An alterable local log.** Code running as the developer can alter the
@@ -322,6 +379,10 @@ The sandbox is a dependency, and fixing its escapes is up to its maintainers.
 9. **Production static keys.** This design has no place for them on a laptop.
    If an application still depends on one in production, the key stays in the
    production platform's own store.
+10. **A partial sandbox.** At the level where `grants run agent` starts, the
+    harness's own tools run outside the sandbox, and a credential file that's
+    missing from the deny list stays readable (see
+    [Sandbox levels](#sandbox-levels)).
 
 ## How to decide what to change
 
