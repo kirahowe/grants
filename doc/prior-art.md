@@ -16,6 +16,11 @@ and reference again, Fly's OpenID Connect page, GitHub's installation token
 endpoint, and OpenRouter's key management page. Plaid, Cloudflare Workers,
 and GitHub's device flow were checked only through search summaries.
 
+A third pass on the same day tested many of the design's claims on the
+owner's machine and read several products' source. [checks.md](checks.md)
+has those results, and the rows below that it changed are marked "read" or
+"tested" accordingly.
+
 ## What products do with a static upstream key
 
 Nearly every product follows the same pattern. The real key stays outside the
@@ -26,7 +31,9 @@ on requests to allowlisted hosts.
 | --- | --- | --- | --- | --- | --- |
 | Fly Tokenizer | The client carries the key sealed to the proxy's public key. The proxy's private key is an environment variable | A shared bearer token, or the Fly machine | The client uses the proxy over plain HTTP | Allowed hosts | read |
 | Tailscale Aperture | Aperture's config | Tailnet identity: user, device, or tags | A base URL per connector | Per connector, with no path rules | read |
-| Infisical Agent Vault and Agent Proxy | A local encrypted store, or Infisical | A token per agent | HTTPS proxy with its own CA | Host rules | read |
+| Infisical Agent Vault and Agent Proxy | A local encrypted store, or Infisical | A token per agent | HTTPS proxy with its own CA | Host rules. Its path matching compares a decoded path and forwards the raw one, and its wildcard crosses slashes. Infisical no longer recommends the open-source project | read |
+| Secretive | The Secure Enclave, with each key's stored form kept as a keychain item in the app's access group | Any process that can reach its agent socket. It shows which app asked | An SSH agent | Per key: an optional fingerprint for each use, and a notification after each use | read |
+| age-plugin-se | The Secure Enclave, with the key's stored form kept in a plain identity file | Any process that can read the file | A plugin the `age` command runs | Per key: none, a passcode, or a fingerprint | read |
 | Claude Code sandbox credentials | The developer's machine, outside the sandbox | The sandbox session | A local proxy that terminates TLS | Hosts where the value is substituted | read |
 | Claude Managed Agents vaults | Anthropic's control plane, write-only | Workspace and session | Substitution at egress | Allowed hosts, header or body | read |
 | Deno Sandbox | The control plane | The sandbox | Substitution at egress | Hosts | read |
@@ -49,6 +56,16 @@ These products share three gaps:
 None of these products removes the stored key. Octo STS comes closest, for one
 provider: it puts federation in front of GitHub, which doesn't federate on its
 own, and keeps its policy in the repository it protects.
+
+Secretive and age-plugin-se show the two ways to hold an enclave key on a
+Mac. Secretive is a signed and notarized app, so its keys sit behind a
+keychain access group and only its own bundle can use them. age-plugin-se
+needs no signing identity, and any process that can read its identity file
+can use the key. The design's signed and unsigned builds follow the same
+split.
+
+A search found no product that federates a laptop to Anthropic or OpenAI with
+a hardware-held key. That is an absence in search results and not proof.
 
 ## Techniques that do not remove the stored key
 
@@ -86,7 +103,7 @@ Whether to revoke a key is then up to the provider.
 | Provider | What was found | Checked |
 | --- | --- | --- |
 | Anthropic | A custom OIDC issuer can be registered with its public keys inline, so the issuer needs no public endpoint. ES256 and the RSA families are accepted, and the JWT header must carry a `kid`. The token lasts 60 seconds to 24 hours, and never more than twice the remaining life of the JWT it was exchanged for. Rules match on subject, audience, claims, or a CEL expression. A `jti` can be used once. The narrowest scope is `workspace:inference`, and nothing finer exists. The token is sent as `Authorization: Bearer`, where an API key uses `x-api-key`. The official SDKs do the exchange themselves from a token file, which they read again at every exchange. Creating issuers and rules takes an organization admin, through the Console or the Admin API with an OAuth login | read |
-| OpenAI | Custom OIDC issuers, by discovery or with inline public keys, plus SPIFFE JWT tokens, and X.509 for the API. A mapping names a project and service account, and optional permissions narrow it. The page doesn't list accepted signing algorithms | read |
+| OpenAI | Custom OIDC issuers, by discovery or with inline public keys, plus SPIFFE JWT tokens, and X.509 for the API. A mapping names a project and service account, and optional permissions narrow it. The page doesn't list accepted signing algorithms. An uploaded key set is documented on the SPIFFE page. For an issuer that isn't listed, the API guide says to contact support, and federation for Codex is a beta that has to be enabled | read |
 | Stripe | Private preview. The issuers are AWS and Google Cloud. The access token lasts one hour | read |
 | Tailscale | Federation with a token-exchange endpoint | summary |
 | PlanetScale | OIDC from GitHub Actions and Depot CI | summary |
@@ -97,7 +114,7 @@ Whether to revoke a key is then up to the provider.
 
 | Platform | What was found | Checked |
 | --- | --- | --- |
-| Fly.io | A machine requests an OIDC token over a Unix socket at `/.fly/api`, and can set the audience. The issuer is `https://oidc.fly.io/<org>`, and `sub` is `<org>:<app>:<machine>`. Every request returns a new token with its own `jti`. The page doesn't name the signing algorithm or the discovery path | read |
+| Fly.io | A machine requests an OIDC token over a Unix socket at `/.fly/api`, and can set the audience. The issuer is `https://oidc.fly.io/<org>`, and `sub` is `<org>:<app>:<machine>`. Every request returns a new token with its own `jti`. The page doesn't name the signing algorithm or the discovery path. The live issuer serves a discovery document at the usual path and signs with RS256 | tested |
 | Cloudflare Workers | No identity token for a Worker. A draft pull request in `workers-sdk`, opened on 2026-10-23, adds an identity binding behind a flag. Community projects run their own issuer as a second Worker | summary |
 | GitHub Actions | An OIDC token from the Actions endpoint, according to Anthropic's federation page, which has a setup guide for it. GitHub's own page wasn't read | summary |
 
@@ -131,6 +148,8 @@ Everything in this section comes from summaries.
 
 - WIMSE, the IETF's workload identity work, has drafts but no RFCs.
 - OAuth token exchange (RFC 8693) is stable, and OpenAI's exchange uses it.
+  Anthropic's exchange is the JWT bearer grant (RFC 7523), so the two
+  providers need separate exchange code.
 - DPoP (RFC 9449) and HTTP message signatures (RFC 9421) are RFCs. The survey
   found no SaaS API that uses them in place of API keys.
 - The identity assertion grant behind MCP's enterprise authorization is a
@@ -152,6 +171,8 @@ Everything in this section comes from summaries.
   https://fly.io/blog/tokenized-tokens/
 - Tailscale Aperture: https://tailscale.com/docs/aperture/how-to/set-up-http-api-connector
 - Infisical Agent Vault: https://github.com/Infisical/agent-vault
+- Secretive: https://github.com/maxgoedjen/secretive
+- age-plugin-se: https://github.com/remko/age-plugin-se
 - Claude Code sandbox: https://code.claude.com/docs/en/sandboxing
 - Claude Managed Agents vaults: https://platform.claude.com/docs/en/managed-agents/vaults
 - Deno Sandbox: https://docs.deno.com/sandbox/
