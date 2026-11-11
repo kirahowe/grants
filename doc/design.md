@@ -1,12 +1,21 @@
 # Grants: design
 
-Status: draft, 2026-11-10. Nothing described here has been built yet.
+Status: draft, 2026-11-11. Nothing described here has been built yet.
 
-This document describes how grants works. Three companion documents cover the
-rest: the [threat model](threat-model.md) explains what the design protects
-and where it falls short, [use cases](use-cases.md) works the design through
-three real applications, and [prior art](prior-art.md) records what other
-products and providers do, along with how carefully each finding was checked.
+This document describes how grants works. The other documents cover the rest:
+
+- [protocol.md](protocol.md) specifies the file format, the control socket,
+  and the gateway's HTTP behaviour.
+- [threat-model.md](threat-model.md) explains what the design protects and
+  where it falls short.
+- [use-cases.md](use-cases.md) works the design through three real
+  applications.
+- [plan.md](plan.md) says what to build first and how to tell it works.
+- [checks.md](checks.md) lists the claims this design rests on, and how each
+  one was checked.
+- [later.md](later.md) keeps the parts of the earlier design that aren't
+  planned yet.
+- [prior-art.md](prior-art.md) records what other products and providers do.
 
 ## The problem
 
@@ -18,9 +27,9 @@ variable.
 
 Its weakness is the key. A single age identity decrypts every value in a
 store, and those values are long-lived. The identity is kept in the login
-Keychain or behind a password-manager command, and any process running as the
-developer can call either one. The `secrets` threat model acknowledges this
-and puts that attacker out of scope (A6, B3).
+Keychain, in a file, or behind a password-manager command, and any process
+running as the developer can read it. The `secrets` threat model acknowledges
+this and puts that attacker out of scope (A6, B3).
 
 A coding agent is code running as the developer. If an agent goes rogue, the
 store is a single prize: the agent can fetch one key, read every value, and
@@ -37,69 +46,56 @@ expire soon afterward.
    stores nothing anywhere. The only secret allowed on a laptop is a key for a
    provider that offers nothing better, and that key has to be bounded: a
    test-mode key, a spend-capped key, or a read-only key. A key with none of
-   those bounds needs the machine's owner to opt in.
+   those bounds needs a fingerprint every time a task that uses it starts.
 2. **Issue each credential to one task.** Give it the narrowest scope that its
    provider can express, and a short lifetime.
-3. **Let a task use a credential rather than hold it.** Where the protocol
-   allows it, a gateway attaches the credential to the request, and the task
-   never holds it.
+3. **Let a task use a credential rather than hold it.** On a laptop a gateway
+   attaches every credential to the request, and the task never holds one.
 4. **Keep config as data.** A credential reaches the application through its
    config, the same way `#secret/req` works today. Environment variables are
-   global mutable state, so don’t use them.
+   global mutable state, so don't carry secrets in them.
 5. **Commit the description of access.** The description contains no values,
    so there's nothing to encrypt, and reviewing an ordinary diff is the access
    review.
-6. **Ship the same artifact to every environment.** What differs between
-   environments is the workload identity, and that decides what each grant
-   resolves to.
+6. **Run the same application code everywhere.** What differs between a
+   laptop and production is who answers for a grant, and the application
+   can't tell.
 7. **Add as little as possible to deploy and CI.** Where a platform gives the
    workload an identity, the library uses it. Where it doesn't, the grant
    reads the platform's own secret store, and nothing else is added.
-8. **Keep minting roots off laptops.** A credential that can create other
-   credentials is worth more than any key it replaces.
-9. **Sandbox agents by degrees.** Outside a sandbox, an agent is effectively
-   the developer, and nothing on the laptop can tell the two apart. Grants
-   still leaves that agent no stored secret to read, so trying it doesn't
-   depend on a sandbox. Each sandbox level adds a protection, and an agent
-   starts at the level that costs least to turn on.
-10. **Degrade per platform.** Apple hardware supports the most complete
-    design. Every other platform gets as much of it as its hardware and OS
-    allow. When a protection is missing, the issuer falls back to the next
-    best one, and the cost of that fallback is written down rather than
-    hidden.
+8. **Keep the concepts few.** A grant, a task, and an issuer are the whole
+   model. When a problem can be solved by removing a concept or by adding a
+   guard, remove the concept.
+9. **Say what each check is worth.** If an attacker's position lets them skip
+   a check, that check is bookkeeping, and the documents call it that.
+10. **Sandbox agents by degrees.** Outside a sandbox, an agent is effectively
+    the developer, and nothing on the laptop can tell the two apart. Grants
+    still leaves that agent no stored secret to carry away, so trying it
+    doesn't depend on a sandbox. A sandbox adds containment on top.
 
 ## Vocabulary
 
-- **Grant**: a description of one credential. It says which provider issues
-  the credential, for which resource, with which permissions, and for how
-  long.
-- **Task**: one bounded piece of work, such as a dev server run, a migration,
-  a test run, or an agent session. Each task lists the grants it may use.
-- **Provider**: the system that issues or accepts the credential, such as AWS,
-  a Postgres server, GitHub, or Anthropic.
-- **Identity source**: something that answers the question "which task is
-  asking?" with a short signed statement. Production and CI already have an
-  identity source. A laptop doesn't, so the local issuer fills that gap.
-- **Source** of a grant: where the grant's authority comes from. It's one of
-  federation, a minted key, or a static key. In production, a grant can also
-  read from the platform's own secret store (see [Decisions](#decisions)).
-- **Delivery** of a grant: how the task uses it. The task either receives the
-  credential by reference, or a gateway injects the credential for it.
+- **Grant**: a named description of one credential. It says which provider
+  the credential is for and what it may be used for.
+- **Task**: a named set of grants, such as `:dev` or `:agent`. A process runs
+  as one task.
+- **Provider**: the system that accepts the credential, such as Anthropic or
+  Plaid.
+- **Issuer**: the local daemon. It holds keys in the Secure Enclave, proves to
+  providers which task is asking, and keeps the keys that a task must not
+  hold.
+- **Gateway**: the part of the issuer that tasks send their requests to. It
+  attaches the credential and forwards the request.
 - **Reference**: what `#grant` returns in place of a credential, in the
-  Clojure sense of an identity whose value changes over time. Dereferencing it
-  gives the grant's current value, and the library renews that value before
-  it lapses. [What a reference yields](#what-a-reference-yields) describes
-  the value.
-- **Profile**: a named variant of the file's data, such as `:dev` or `:live`.
-  A profile picks the account, host, or database that a grant points at. On a
-  laptop the task names its profile.
-- **Slot**: one named secret that a static grant needs, such as `:secret`.
-  The file names the slots, and the values are sealed on the machine.
-- **Bound**: the limit a static key carries at its provider: `:test`,
-  `:capped`, `:read-only`, or `:live` for a key with no limit.
+  Clojure sense of an identity whose value can change over time.
+  [What a reference yields](#what-a-reference-yields) describes the value.
+- **Seal**: to put a provider's key on the machine, encrypted to an enclave
+  key and tied to the host it's for.
+- **Slot**: one named secret that a sealed grant needs, such as `:secret`.
+- **Bound**: the limit on what a sealed key can reach: `:test`, `:capped`,
+  `:read-only`, or `:live` for a key with no limit.
 - **Wrap**: to encrypt a piece of the application's own data with a key that
-  never leaves the issuer. A wrap grant gives a task that operation without
-  giving it the key.
+  never leaves the issuer.
 
 ## What gets committed
 
@@ -108,239 +104,209 @@ task. The file holds no values:
 
 ```clojure
 ;; grants.edn (committed, holds no values)
-{:app    "website"
- :minter "https://minter.example.dev"
+{:app "horizon"
 
  :grants
- {:db/app
-  {:provider :postgres
-   :database "website_dev"
-   :role     "app_rw"
-   :ttl      "1h"}
+ {:llm/claude
+  {:provider :anthropic}
 
-  :db/migrate
-  {:provider :postgres
-   :database "website_dev"
-   :role     "schema_owner"
-   :ttl      "10m"}
-
-  :llm/claude
-  {:provider :anthropic
-   :scope    :inference
-   :ttl      "10m"
-   :budget   {:requests 500}}
-
-  :repo/read
-  {:provider    :github
-   :repos       ["kirahowe/website"]
-   :permissions {:contents :read}
-   :ttl         "15m"}
-
-  :payments/test
-  {:provider :stripe
-   :source   :static
+  :plaid/sandbox
+  {:provider :http
+   :host     "sandbox.plaid.com"
    :bound    :test
-   :allow    [[:post "/v1/payment_intents"]
-              [:get  "/v1/payment_intents/*"]]}}
-
- :default-task :dev
+   :attach   {"PLAID-CLIENT-ID" :client-id
+              "PLAID-SECRET"    :secret}
+   :allow    [[:post "/link/token/create"]
+              [:post "/item/public_token/exchange"]
+              [:post "/transactions/sync"]]}}
 
  :tasks
- {:dev     {:grants [:db/app :payments/test]}
-  :serve   {:grants [:db/app :payments/test]}
-  :migrate {:grants [:db/migrate] :approval :presence}
-  :agent   {:grants  [:repo/read :llm/claude]
-            :deliver :inject}}}
+ {:dev   {:grants [:llm/claude :plaid/sandbox]}
+  :agent {:grants [:llm/claude]}}
+
+ :default-task :dev}
 ```
 
-Each grant names its provider, and the tool resolves the grant using the best
-source that provider supports. To see the source of every grant, run `grants
-doctor`. You have to write out a static source explicitly, because it's the
-one case where a key is stored.
+There are two kinds of grant in this file. `:llm/claude` names a provider that
+accepts a signed identity, so nothing is stored for it anywhere.
+`:plaid/sandbox` is for a provider that only has long-lived keys, so one key
+is sealed on the machine, and the grant says where that key may go and what it
+may be used for. [Where a grant's authority comes from](#where-a-grants-authority-comes-from)
+covers both.
 
-A task can ask for less than its declaration allows, such as one repository
-out of three. Asking for more means changing this file, and that change shows
-up as a diff that someone reviews.
+The file has no profiles or environments. A sandbox key and a production key
+are two grants with two names, such as `:plaid/sandbox` and `:plaid/live`, and
+each task lists the ones it may use. The application's own config decides
+which grant a given environment refers to, with whatever mechanism it already
+uses for that.
 
-Differences between environments are written in the file as data, in the
-style of Aero's `#profile`. Dev and production name different databases,
-roles, and accounts, and they never share a credential.
+Asking for more access means changing this file, and that change shows up as
+a diff that someone reviews.
 
-```clojure
-:plaid/api
-{:provider :http
- :host     #profile {:dev  "sandbox.plaid.com"
-                     :live "production.plaid.com"}
- ...}
-```
-
-On a laptop, a task names its profile with `:profile`, and the issuer
-resolves every grant for that task under it. A task that names none gets
-`:dev`. A process that declares the
-`:dev` task can't reach what the `:live` profile points at. In production
-the application names the profile when it reads its config, and the
-provider's own rules decide what that workload may have.
-
-The file above is an illustration. [Use cases](use-cases.md) has complete
-files for three real applications.
-
-The application's own config refers to grants by name:
+The application's config refers to grants by name:
 
 ```clojure
 ;; config.edn
-{:db       {:host        "localhost"
-            :dbname      "website_dev"
-            :credentials #grant :db/app}
- :payments {:client #grant :payments/test}}
+{:extraction {:model  "claude-sonnet-5-5"
+              :client #grant :llm/claude}
+ :plaid      {:client #grant :plaid/sandbox}}
 ```
 
-`#secret/req` returns a string, but `#grant` can't, because the credential
-behind it expires while the process is still running. Instead, `#grant`
-returns a reference. The application derefs it whenever it needs the current
-value, and the library renews the credential before it lapses. A connection
-pool takes the reference as its credential supplier.
-
-The library provides `#grant` as a reader for `clojure.edn` and as an Aero
-tag, so it works in a config that Integrant or Aero already loads.
+`#secret/req` returns a string, but `#grant` returns a reference. The
+application derefs it each time it builds a request. The library provides
+`#grant` as a reader function for `clojure.edn` and as an Aero tag. Reading
+the tag does no I/O, so loading a config never touches the issuer. The first
+deref does.
 
 ### What a reference yields
 
-The value behind a reference depends on what the grant is for, and it has
-the same shape in every environment.
-
-For a grant to an HTTP API, the value is a map with a base URL and a map of
-headers:
+For a grant to an HTTP API, the value is a map:
 
 ```clojure
-@(:client (:payments config))
-;; => {:base-url "https://api.stripe.com"
-;;     :headers  {"authorization" "Bearer sk_..."}}
+@(:client (:plaid config))
+;; => {:base-url "http://127.0.0.1:7465/t/gt1k3.../plaid.sandbox"
+;;     :headers  {"PLAID-CLIENT-ID" "grants-placeholder"
+;;                "PLAID-SECRET"    "grants-placeholder"}
+;;     :host     "sandbox.plaid.com"
+;;     :bound    :test}
 ```
 
 The application sends its requests to `:base-url` and merges `:headers` into
-each one. A string can't do this job, because the header changes with the
-source. An Anthropic API key travels in `x-api-key`, and the token that
-replaces it under federation travels in `authorization`. Plaid needs two
-headers.
+each one. `:host` and `:bound` aren't secret. They let application code check
+what it's talking to, such as a guard that refuses to run a sandbox-only
+helper against a live grant.
 
 The map is what lets one piece of application code run everywhere:
 
-| Where the grant resolves           | `:base-url`                  | `:headers`                          |
-| ---------------------------------- | ---------------------------- | ----------------------------------- |
-| Laptop, by injection               | The gateway, on loopback     | The grant's headers, as placeholders |
-| Laptop, by reference               | The provider                 | A short-lived credential            |
-| Production, federated              | The provider                 | A short-lived credential            |
-| Production, platform secret store  | The provider                 | The stored key                      |
+| Where the grant resolves          | `:base-url`              | `:headers`                           |
+| --------------------------------- | ------------------------ | ------------------------------------ |
+| Laptop                            | The gateway, on loopback | Placeholders                         |
+| Production, federated             | The provider             | A short-lived credential             |
+| Production, platform secret store | The provider             | The stored key                       |
 
-Under injection the headers are still present, each holding a placeholder,
-and the gateway overwrites them. An SDK that insists on an API key gets a
-value to pass, and the application doesn't branch on how the grant was
-delivered.
+On a laptop the headers hold placeholders, and the gateway replaces them. An
+SDK that insists on an API key gets a value to pass, and the application
+doesn't branch on where it's running. In production the value changes as
+credentials are renewed, which is why the rule is to deref for each request
+and not to keep the map.
 
-For other protocols the value is whatever the client needs. A Postgres grant
-yields a user name, a client certificate, and its key. A
-[wrap grant](#application-data) yields a handle for `wrap` and `unwrap`.
+A deref that can't produce a value throws an exception that says which grant
+failed, why, and what to run to fix it.
+
+A [wrap grant](#live-keys-and-application-data) yields a handle for `wrap`
+and `unwrap`.
 
 ## Where a grant's authority comes from
 
-A grant gets its authority from one of three sources. The tool works through
-them in this order and uses the first one the provider supports:
+**A signed identity.** The provider trusts the issuer's public key. The issuer
+signs a statement that says which task is asking, and the provider exchanges
+it for a credential that lasts minutes. Anthropic works this way, and nothing
+is stored on any machine. OpenAI documents the same thing with more
+conditions, and [checks.md](checks.md) lists what is and isn't confirmed.
 
-```mermaid
-flowchart TD
-    G["A grant names a provider"] --> Q1{"Does the provider accept an outside<br/>identity token or certificate?"}
-    Q1 -->|yes| F["Federate<br/>nothing is stored anywhere"]
-    Q1 -->|no| Q2{"Does it have an API for minting scoped keys,<br/>and is a remote minter set up?"}
-    Q2 -->|yes| M["Mint<br/>the root lives in the minter,<br/>never on the laptop"]
-    Q2 -->|no| Q3{"Is the key bounded,<br/>or has the owner opted in?"}
-    Q3 -->|yes| S["Static<br/>one key,<br/>sealed in the local gateway"]
-    Q3 -->|no| X["Out of scope on a laptop"]
-```
+**A sealed key.** The provider offers only long-lived keys. One key,
+restricted as far as the provider allows, is sealed on the laptop. Only the
+issuer uses it, and a task never receives it. [Sealed keys](#sealed-keys)
+covers sealing, bounds, and binding.
 
-**Federate.** The provider trusts the identity source directly, and exchanges
-a signed identity for a short-lived credential. Anthropic, OpenAI, AWS, and
-Google Cloud work this way, and so does anything that trusts a certificate
-authority, such as Postgres `cert` auth and SSH certificates. No secret is
-stored on any machine.
+A third source, a key minted on request by a remote service that holds the
+minting root, isn't planned. [later.md](later.md) keeps that design.
 
-**Mint.** The provider has an API for creating scoped keys, but creating one
-requires a long-lived root. GitHub Apps and Cloudflare work this way. The root
-lives in a remote minter, which creates a key for the task and revokes it when
-the task ends.
-
-**Static.** The provider offers only long-lived keys. One key, restricted as
-far as the provider allows, is sealed on the laptop. Only the gateway can use
-it, and a task never receives it. The key has to be bounded, unless the
-machine's owner opts in to a live one. [Static keys](#static-keys) covers
-sealing, bounds, and the opt-in.
-
-[Providers today](#providers-today) shows which providers fall under each
-source.
-
-## How a task uses a grant
-
-A task uses a grant in one of two ways: it holds a reference to the
-credential, or a gateway injects the credential into its requests.
-
-### By reference
-
-The task receives the credential and keeps it in memory. This suits
-application tasks, and protocols other than HTTP, such as a Postgres
-connection.
+Either way, the task's side looks the same. It sends a request to the gateway
+with no credential, and the gateway attaches one:
 
 ```mermaid
 sequenceDiagram
     participant T as Task
-    participant L as grants library
-    participant I as Identity source
+    participant G as Gateway
+    participant K as Enclave keys
     participant P as Provider
-    T->>L: deref the reference for :db/app
-    L->>I: which task am I?
-    I-->>L: signed identity, valid for minutes
-    L->>P: present identity, ask for the grant's scope
-    P-->>L: credential that expires at the TTL
-    L-->>T: current value
-    Note over L,P: before expiry the library repeats the exchange
+    T->>G: API request to the task's URL, placeholder headers
+    G->>G: check the task, the grant, and the operation rules
+    alt signed identity
+        G->>K: sign "app:task", five minutes
+        G->>P: exchange the identity for a short token
+        P-->>G: token, kept in memory until it nears expiry
+    else sealed key
+        G->>K: unseal the key into memory
+    end
+    G->>P: forward the request with the credential attached
+    P-->>G: response
+    G-->>T: response
+    Note over T,G: the task never holds a provider credential
 ```
 
-The library doesn't store anything it receives, and the credential exists only
-in the task's memory. If the credential leaks from there, though, it works
-from anywhere until it expires.
+## Tasks
 
-On a laptop the issuer does the exchange and hands the library the result
-over its socket, so the library there is a socket client that renews values.
-In production and CI there is no issuer, and the library does the exchange
-itself. Provider code for a laptop is therefore written once, in the issuer.
+A process becomes a task by asking the issuer. The library does this on the
+first deref:
 
-### By injection
+1. It finds `grants.edn` by walking up from the working directory.
+2. It makes a random token, connects to the issuer's control socket, and
+   sends the directory, the token, and a task name. The name comes from
+   `-Dgrants.task` or the `GRANTS_TASK` variable, and otherwise the file's
+   `:default-task`.
+3. The issuer reads the file itself, checks that its owner has approved it,
+   and replies with the task's URL at the gateway, which contains the token.
 
-The task sends its request to the gateway without a credential. The gateway
-checks the request, gets the credential, and attaches it. This suits agent
-tasks and every static key.
+The connection stays open, and the task lasts exactly as long as it does.
+When the process exits, the kernel closes the connection, the task ends, and
+its URL stops working. Nothing else tracks a task's life.
 
-```mermaid
-sequenceDiagram
-    participant T as Task
-    participant W as Gateway
-    participant I as Issuer
-    participant P as Provider
-    T->>W: API request with a task token and no credential
-    W->>W: check operation rules and budget
-    W->>I: sign an identity for this task
-    I-->>W: signed identity
-    W->>P: exchange the identity for a short token
-    P-->>W: token
-    W->>P: forward the request with the token attached
-    P-->>W: response
-    W-->>T: response
-    Note over T,W: the task never holds a provider credential
-```
+`grants run <task> -- <command>` does the same on behalf of a command. It
+declares the task, puts the task's URL in `GRANTS_TASK_URL` for the command,
+and holds the connection until the command exits. A library that finds that
+variable uses it and never opens the socket. This is also how a process
+inside a sandbox gets its grants: the sandbox keeps the control socket out of
+reach, and the launcher outside it holds the task.
 
-When federation and injection are combined, nothing is stored and the task has
-nothing to leak. The cost is a proxy in the request path, and a base URL that
-differs between a laptop and production.
+A Clojure developer adds the dependency and jacks in from their editor as
+usual. The daemon is a launchd agent with socket activation, so the first
+connection starts it.
 
-## Static keys
+Three details follow from "a task is a held connection":
+
+- The library keeps one connection per process, somewhere a code reload
+  doesn't replace, so `(reset)` doesn't end the task.
+- If the issuer restarts or is upgraded, every connection closes. Each holder
+  notices, connects again, and declares the same task with the same token, so
+  the task's URL doesn't change. A client that copied its base URL at startup
+  keeps working, and so does a command that got its URL from the launcher.
+- Any process running as the developer outside a sandbox can declare any task
+  of any approved file. Task names keep honest code apart, and they keep a
+  sandboxed agent to its own task, because it can't reach the socket. They
+  don't stop an attacker who is already running as the developer. The threat
+  model covers what that means.
+
+## Approving the file
+
+The issuer honours one version of an application's `grants.edn`: the one its
+owner last approved. It reads the file from the directory the task named,
+reduces it to a canonical form, and hashes that. Comments, whitespace, key
+order, and the order of rules don't change the hash. If the hash is the
+approved one, the task starts. If it isn't, the task is refused with a
+message that says to run `grants approve`.
+
+`grants approve` shows what the file would change, compared with the approved
+version: grants added to or removed from each task, and any change to a host,
+an attached header, an operation rule, a bound, an environment mapping, or a
+list of hosts a task may reach. Approving makes this version the approved
+one, and the earlier one stops being honoured. A file that goes back to an
+older version asks again, like any other change.
+
+Workspaces and branches that carry the same file never ask. A workspace whose
+copy an agent edited is refused until the owner has looked. A directory that
+claims an existing `:app` with a different file is shown as that, so a copied
+file can't quietly take over another application's name.
+
+What an approval is worth depends on the build
+([Two builds](#two-builds)). In the unsigned build it's typed in a terminal
+and recorded in a file. That holds against a sandboxed agent, which can edit
+`grants.edn` but can't reach the issuer to approve its own edit. Against
+unsandboxed code it's bookkeeping. In the signed build the approval happens
+in the issuer's own window with a fingerprint.
+
+## Sealed keys
 
 ### Describing an HTTP API
 
@@ -348,414 +314,212 @@ differs between a laptop and production.
 its key, and the operations a task may call:
 
 ```clojure
-:plaid/api
+:llm/openrouter
 {:provider :http
- :source   :static
- :host     #profile {:dev  "sandbox.plaid.com"
-                     :live "production.plaid.com"}
- :bound    #profile {:dev :test :live :live}
- :attach   {:headers {"PLAID-CLIENT-ID" :client-id
-                      "PLAID-SECRET"    :secret}}
- :allow    [[:post "/link/token/create"]
-            [:post "/item/public_token/exchange"]
-            [:post "/transactions/sync"]]}
+ :host     "openrouter.ai"
+ :bound    :capped
+ :attach   {"authorization" ["Bearer " :key]}
+ :allow    [[:post "/api/v1/chat/completions"]
+            [:get  "/api/v1/credits"]]}
 ```
 
-In `:attach`, a keyword names a slot. A vector joins strings and slots, so a
-bearer token is `{"authorization" ["Bearer " :key]}`. A named provider such
-as `:stripe` is a preset that fills in the host and the headers, and a
-provider with no preset is written out as above. Most providers will never
-have a preset, so this form is the base one.
+In `:attach`, a keyword names a slot, and a vector joins strings and slots.
+Every `:http` grant lists `:allow` rules, because they are the only control
+over what the key is used for. The host is always reached over HTTPS on port
+443, and the file has no way to say otherwise.
 
 ### Sealing
 
-The file names a grant's slots, and `grants seal` puts the values on the
-machine:
-
-```
-grants seal :plaid/api --profile live
-```
-
-The command asks for each slot at a hidden prompt, and the owner runs it
+`grants seal :plaid/sandbox` says what it's about to seal for (the host, the
+header, and the bound), then asks for each slot's value. The owner runs it
 outside any agent session. The issuer encrypts each value to an enclave key
-and stores the result on disk, filed under the application, the grant, the
-profile, and the slot. `grants doctor` lists which slots are sealed on this
-machine and which are missing. A new machine starts with none, and the owner
-seals them again from the provider's dashboard.
+and stores the result. A new machine starts with none, and the owner seals
+them again from the provider's dashboard.
+
+A sealed value records what it was sealed for: the application, the grant,
+the slot, the host, the header it goes in, and the bound. The gateway refuses
+to use it if any of those differ from the approved file. An edit to `:host`
+or `:attach` therefore can't move a key somewhere new. The owner has to seal
+it again, which means getting the value from the provider's dashboard and
+typing it in. `:allow` isn't part of the record, because widening what a key
+may do is a change the approval covers.
+
+A grant whose key isn't sealed yet doesn't stop its task. The task's other
+grants work, and a deref of that one says what to run.
+
+In the unsigned build the values are typed at a hidden terminal prompt. In
+the signed build they're typed into the issuer's own window, because a
+terminal may belong to an agent's harness.
 
 ### Bounds
 
 A sealed key can be used by any task that lists its grant, so its worth
-depends on what the key can do at the provider. Every static grant declares
-a bound:
+depends on what the key can do at the provider. Every sealed grant declares a
+bound:
 
-| `:bound`     | The key                                                 |
-| ------------ | ------------------------------------------------------- |
+| `:bound`     | The key                                                     |
+| ------------ | ----------------------------------------------------------- |
 | `:test`      | Belongs to a sandbox or test mode, and touches no real data |
-| `:capped`    | Carries a spend cap set at the provider                 |
-| `:read-only` | Can read but can't change anything                      |
-| `:live`      | Has none of these limits                                |
+| `:capped`    | Carries a spend cap set at the provider                     |
+| `:read-only` | Can read but can't change anything                          |
+| `:live`      | Has none of these limits                                    |
 
-The gateway checks a bound when the provider makes that possible. Plaid's
-sandbox is a different host, and a Stripe test key has its own prefix.
-Otherwise the bound is the owner's statement about the key, and the threat
-model treats it as one.
+The bound is required, so nobody seals a key without saying what limits it.
+It's the owner's statement, recorded when the key is sealed, and the threat
+model treats it as a statement. The first three behave the same way. A
+`:live` key works differently, and
+[Live keys and application data](#live-keys-and-application-data) covers it.
 
-### Live keys
+## The gateway
 
-Some applications have no production other than the laptop. A personal
-finance application that runs at home needs the live key for its bank data
-on the same machine where its developer writes code. Refusing that key
-wouldn't remove it from the laptop. It would stay where it is now, in an
-encrypted store whose key any process can read.
+The gateway is the issuer's loopback HTTP listener. Each task gets a base URL
+for each of its grants:
 
-A grant with `:bound :live` is allowed under four conditions:
-
-- The machine opts in. The owner runs `grants allow-live` for that
-  application and grant, and approves it in the issuer's own window with
-  Touch ID. `grants.edn` can't opt in, so a change to the repository can't
-  bring a live key into reach.
-- Delivery is by injection. The task never holds the key.
-- The grant lists `:allow` rules. A live grant with no operation rules is
-  refused.
-- The key is sealed to the presence key. Unsealing it takes a fingerprint,
-  once each time a task that uses it starts. The gateway holds the unsealed
-  key in memory until that task ends.
-
-A long-running server asks for one fingerprint when it starts, and its
-scheduled work runs unattended after that.
-
-## Application data
-
-Some secrets don't come from a provider's dashboard. An application that
-links a bank account through Plaid receives an access token for that
-account, and it has to keep the token for years. Applications usually
-encrypt such tokens with a key from their secret store, which puts the key
-back on disk beside the data.
-
-A wrap grant gives the application encryption without the key:
-
-```clojure
-;; grants.edn
-:tokens/at-rest {:provider :wrap}
+```
+http://127.0.0.1:7465/t/<task-token>/plaid.sandbox
 ```
 
-```clojure
-(grants/wrap   tokens "access-sandbox-1234")  ;; => "gw1:k7:..."
-(grants/unwrap tokens blob)                   ;; => "access-sandbox-1234"
-```
+The grant `:plaid/sandbox` becomes the segment `plaid.sandbox`. The token is
+in the URL because a base URL is the one setting nearly every SDK accepts,
+and many accept no extra header.
 
-The issuer creates a wrapping key the first time a profile uses the grant,
-and seals it to an enclave key. `wrap` and `unwrap` run inside the issuer,
-and the key never reaches the task. Each blob names the key that made it.
-Every profile has its own key, so data written under `:dev` doesn't open
-under `:live`.
+For each request the gateway does the following:
 
-Wrapping protects the stored copies: the database file, its backups, and
-anything that syncs them. It doesn't protect against the running task, which
-can unwrap whatever it's allowed to.
+- Finds the task from the token, and checks that the task lists the grant.
+- Checks the method and path against the grant's `:allow` rules.
+- Removes every credential header the client sent, then attaches the grant's
+  own. For a federated grant it does the exchange itself and keeps the token
+  in memory until it nears expiry.
+- Forwards the request over TLS to the grant's host, and streams the response
+  back.
 
-An enclave key can't be exported, so wrapped data doesn't survive the loss
-of the machine. A grant handles that in one of two ways:
+An `:allow` rule is a method and a path, and `*` stands for exactly one path
+segment. The gateway matches the path as the client sent it and never
+normalizes it. A request whose path could be read two ways, with `..`
+segments, encoded slashes, or doubled slashes, is refused. That keeps the
+gateway and the provider from disagreeing about which operation was asked
+for. [protocol.md](protocol.md) has the exact rules and
+[vectors.md](vectors.md) the test cases.
 
-- **Acquire the data again.** A bank can be linked again, and this is the
-  default.
-- **Name a recovery recipient.** With `:recovery "age1..."`, the issuer also
-  encrypts the wrapping key to that age public key when it creates it. The
-  private half stays offline, and `grants recover` rebuilds the wrapping key
-  on a new machine.
+The gateway never follows a redirect, never forwards cookies, and refuses
+proxy and tunnel requests on its main port. Its own refusals carry a
+`Grants-Error` header and a message that names the task and the grant, so an
+application's error says what happened and a provider's errors can't be
+mistaken for the gateway's. A refusal that retrying won't fix, such as a
+provider that rejects the exchange because setup is wrong, is marked so that
+SDKs don't retry it.
 
-In production a wrap grant resolves to the platform's key management service
-where one exists, reached by federation. Elsewhere the library reads a
-wrapping key from the platform's secret store and does the encryption itself.
+A task token is a bearer token on this machine. It works only at this gateway
+and only while its task runs, so it's worthless anywhere else, but a copy in
+a log file works for anything on the laptop that can reach the gateway's
+port. [Agents](#agents) describes how a sandboxed session is kept from using
+another task's token.
 
-## Where things run
+The first version has no request budgets. The limit on spending is one the
+provider enforces, such as a spend limit on an Anthropic workspace.
+Anthropic's documentation doesn't say that the limit covers credentials from
+an exchange, and the first check in [plan.md](plan.md) finds out.
+[later.md](later.md) keeps the budget design.
 
-The following diagram shows each component and where it runs:
+## The issuer
 
-```mermaid
-flowchart TB
-    subgraph repo["Repository, main branch protected"]
-        GE["grants.edn"]
-    end
-    subgraph laptop["Laptop"]
-        subgraph se["Secure Enclave"]
-            K["issuer keys"]
-        end
-        ISS["Issuer and gateway<br/>one signed binary"]
-        subgraph task["Application task"]
-            LIB["grants library"]
-        end
-        subgraph sbx["Agent sandbox"]
-            AG["agent"]
-        end
-    end
-    MIN["Remote minter<br/>holds minting roots"]
-    PROV["Providers"]
-    GE -. "pinned copy" .-> ISS
-    GE -. "read at main" .-> MIN
-    ISS -->|"sign"| K
-    LIB -->|"identity"| ISS
-    AG -->|"requests"| ISS
-    LIB -->|"exchange, then use"| PROV
-    ISS -->|"exchange and forward"| PROV
-    ISS -->|"identity"| MIN
-    MIN -->|"mint and revoke"| PROV
-```
+The issuer turns the laptop into an identity provider and holds the sealed
+keys. It runs as a launchd agent in the user's session. launchd owns its
+control socket and its loopback port, so no other process can take either
+while the agent is registered. Unsandboxed code could change that
+registration.
 
-## One file, five identity sources
-
-The same `grants.edn` works in every environment. What changes is where the
-task's identity comes from:
-
-```mermaid
-flowchart LR
-    G["grants.edn<br/>same in every environment"] --> L["grants library"]
-    L --> D{"Where is the task running?"}
-    D -->|production| WI["platform workload identity"]
-    D -->|CI| CI["CI system's OIDC token"]
-    D -->|laptop| LI["local issuer<br/>keys in the Secure Enclave"]
-    D -->|cloud agent| SI["session delegation<br/>from the developer's issuer"]
-    WI --> P["provider checks the identity<br/>and returns a scoped credential"]
-    CI --> P
-    LI --> P
-    SI --> P
-    B["A person in a browser"] -->|"login at an access proxy"| M["remote minter"]
-    M --> P
-```
-
-| Where                  | Identity source                                                | New infrastructure               |
-| ---------------------- | -------------------------------------------------------------- | -------------------------------- |
-| Production             | The platform's workload identity, where it has one             | None                             |
-| CI                     | The CI system's OIDC token                                     | None                             |
-| Laptop                 | The local issuer                                               | One signed binary                |
-| Cloud agent sandbox    | A delegation from the developer's issuer, bound to the session | Undecided, see [Agents](#agents) |
-| A person in a browser  | Their login at an access proxy, checked by the minter          | [The remote minter](#the-remote-minter) |
-
-The last row has no library in it. A browser application has no task and no
-config to read, so it asks the minter for a credential directly.
-
-## Production targets
-
-Production differs from one platform to the next in two ways: whether the
-platform gives a workload an identity, and where it keeps secrets.
-
-| Target             | Workload identity                                   | Federated grants                         | Static grants                         |
-| ------------------ | --------------------------------------------------- | ---------------------------------------- | ------------------------------------- |
-| Fly.io             | An OIDC token, requested over a socket in the machine | The library exchanges the token          | Fly secrets                           |
-| AWS, Google Cloud  | The platform's own                                  | The library exchanges it                 | The platform's secret manager         |
-| GitHub Actions     | An OIDC token                                       | The library exchanges the token          | Actions secrets                       |
-| Cloudflare Workers | None yet                                            | Not available                            | Worker secrets                        |
-| The laptop itself  | The local issuer                                    | The issuer exchanges, as in development  | Sealed keys, with the live opt-in     |
-
-A grant that can't federate on its target reads the platform's secret store.
-Each slot maps to one secret, named after the grant and the slot:
-`:plaid/api` with the slot `:secret` reads `PLAID_API_SECRET`. A grant can
-override the name. On Fly and in Actions a secret arrives as an environment
-variable, and the library reads it there, so the application's own code
-still takes its credentials from config.
-
-`grants init --target fly --profile prod` writes the setup for one target:
-
-- For each federated grant, the provider-side trust: the platform's issuer,
-  and a rule that matches this application's workloads.
-- For each static grant, the command that stores its slots, with the secret
-  names filled in and the values left for the owner to supply.
-
-`grants doctor --target fly --profile prod` lists each grant with the source
-it resolves to on that target, so a grant that still depends on a stored key
-is visible before a deploy.
-
-A Cloudflare Worker runs TypeScript and has no identity to federate with, so
-the library has no part in it. `grants.edn` still describes the Worker's
-grants, and `grants init --target workers` lists the secrets the Worker
-needs. When Workers gains an identity binding, those grants can move to
-federation with no change to the file.
-
-## The local issuer
-
-The local issuer turns the laptop into an identity provider. It holds signing
-keys, but no credentials.
-
-This section describes the issuer on macOS, where the Secure Enclave is
-Apple's hardware key store. [Platforms](#platforms) covers what changes on
-Windows and Linux.
-
-The issuer's keys are generated inside the Secure Enclave and can't be
-exported, and the enclave lets only the issuer's signed binary use them. A
-process that takes over the developer's account can ask the issuer to sign
-something, subject to the checks described below, but it can't copy a key and
-leave with it.
-
-The issuer signs two kinds of things:
-
-- Short-lived JWTs, for providers that federate over OIDC.
-- Short-lived X.509 certificates, for providers that trust a certificate
-  authority.
-
-During setup, each provider is told once to trust the issuer's public key.
-Anthropic and OpenAI accept the public key inline, so the laptop doesn't need
-a public endpoint for them.
+It is one binary: a Go core with no third-party modules, and a small Swift
+library for the Secure Enclave. It keeps two enclave keys, one for signing
+identities and one that sealed values are encrypted to. Neither can be
+exported, and both are usable while the screen is locked, so a server's
+scheduled work doesn't stop when the laptop locks. Their stored forms are
+files in the issuer's own directory, never items in the login keychain.
 
 ### What an identity says
 
-A JWT from the issuer carries these claims:
+The issuer signs short-lived JWTs with ES256. A token carries these claims:
 
-| Claim       | Value                                                              |
-| ----------- | ------------------------------------------------------------------ |
-| `iss`       | A URL that names this machine's issuer. Nothing fetches it         |
-| `sub`       | `<app>:<profile>:<task>`, such as `finance-aggregator:live:serve`  |
-| `aud`       | The provider the token is for                                      |
-| `iat`, `exp` | Five minutes apart                                                |
-| `jti`       | A fresh value for every token, so a provider can refuse a replay   |
-| `launched`  | Whether the launcher started the process or it declared its task   |
-| `presence`  | Whether a fingerprint was given for this signature                 |
+| Claim        | Value                                                            |
+| ------------ | ---------------------------------------------------------------- |
+| `iss`        | A URL that names this machine's issuer. Nothing fetches it       |
+| `sub`        | `<app>:<task>`, such as `finance-aggregator:dev`                 |
+| `aud`        | The provider the token is for                                    |
+| `iat`, `exp` | Five minutes apart                                               |
+| `jti`        | A fresh value for every token, so a provider can refuse a replay |
 
-The header carries a `kid`, because Anthropic rejects a token without one.
-A provider's rule matches on `sub`, usually by prefix: a rule for
-`finance-aggregator:live:*` covers that application's live tasks and nothing
-else on the machine. A rule can also require `presence`.
+The header carries a `kid`, which is the thumbprint of the signing key.
+A provider's rule matches on `sub`, usually by prefix. A rule for subjects
+that start with `finance-aggregator:` covers that application's tasks and
+nothing else on the machine, as far as honest code goes.
 
-### Identifying the task
-
-A process becomes a task in one of two ways:
-
-- **The launcher starts it.** For example, `grants run serve` runs the command
-  that `grants.edn` declares for `serve`. When the process connects to the
-  issuer's Unix socket, the issuer matches that peer process to the task it
-  launched.
-- **It declares its own task.** A process the launcher didn't start, such as
-  a REPL that CIDER or Calva started, connects to the socket and names its
-  project and task. If it names no task, the issuer uses the project's
-  `:default-task` from `grants.edn`. A `-Dgrants.task=...` JVM option in a
-  `deps.edn` alias overrides the default. A task name isn't a secret, so this
-  doesn't break principle 4.
-
-Either way, the issuer enforces the pinned `grants.edn`, approval when the
-file changes, and presence. The task's profile comes from the pinned file
-and never from the process. Declaring a task is no more powerful than running
-the launcher, which any code running as the developer can already do. Outside
-a sandbox, matching a process to a task was only ever bookkeeping, and the
-threat model covers what that means. A sandboxed agent can do neither,
-because its sandbox keeps the issuer's socket out of reach.
-
-The daemon is installed as a launchd agent with socket activation, so the
-first connection starts it if it isn't already running. A Clojure developer
-adds the dependency and jacks in from their editor as usual.
-
-The issuer records every issuance: the task, the grant, the time, the
-process, and whether the task was launched or declared.
-
-### Approving the file
-
-The issuer pins the version of `grants.edn` that it will honour. When the file
-changes, the issuer shows the change in its own window, described in terms of
-access, for example "task agent gains write on kirahowe/website". The
-developer approves the change there, with Touch ID. The issuer doesn't rely on
-the terminal to show the change, because an agent might control the terminal.
-
-### Presence
-
-`:approval :presence` goes on a grant, or on a task as shorthand for all of
-its grants. The issuer serves such a grant with a second enclave key that
-requires Touch ID every time it's used. An agent can't supply a fingerprint,
-so the grant stays with the person.
-
-The fingerprint is asked for when the grant is issued. For a federated or
-minted grant that's each issuance, so a REPL can hold `:db/migrate` among
-its grants and prompt only when a migration runs. For a sealed key it's the
-unsealing, which happens once each time a task starts.
-
-Keep presence for rare actions: when a prompt appears often, people start
-approving it without reading it.
+The `iss`, `sub`, and `kid` formats are fixed from the first version, because
+every provider rule is written against them.
 
 ### Setup
 
 Setup is where the goal of being "as easy as a `.env` file" is hardest to
-meet. Each provider has to be told once to trust the issuer, and told what
-each task maps to. `grants init` generates that configuration from
-`grants.edn` as Terraform or CLI commands, so the trust setup lives in the
-repository as code too.
+meet. Each provider has to be told once to trust this machine's issuer, and
+told what an application's tasks map to.
 
-Applying the configuration requires the owner's login to the provider, and the
-owner does this outside any agent session. Whether setup can feel light is the
-main product risk.
+`grants init` is the one command for it. Run in a project, it does whatever
+is still missing, in order, and says what each step is before it does it:
 
-For Anthropic the configuration is three resources: a service account, an
-issuer that holds this machine's public key inline, and a rule that maps a
-`sub` prefix to the service account with the `workspace:inference` scope.
-`grants init` writes them as `ant` commands. They need an organization admin
-who is logged in with `ant auth login`, because those endpoints refuse API
-keys. `grants init` also proposes one workspace per application, since a
-workspace is the smallest unit Anthropic limits and bills separately.
+1. Installs the agent, if this machine doesn't have it.
+2. Registers with each provider the file federates with.
+3. Seals each key that isn't sealed.
+4. Approves the file.
 
-## Platforms
+For Anthropic, the machine is registered once: an issuer entry that holds its
+public key inline, a service account, and a workspace with a spend limit.
+Every application on the machine shares those by default, and each one adds a
+single rule that maps subjects starting with its name to the service account,
+with the `workspace:inference` scope. An application that wants its own limit
+gets its own workspace.
 
-The issuer is defined by the protections it provides, not by the Secure
-Enclave. macOS on Apple hardware is the reference platform and provides all
-of them. On other platforms the issuer provides what the hardware and OS
-allow, and falls back where they don't.
+The issuer entry also caps how long an identity token may claim to last, at
+ten minutes. Anthropic refuses a longer one, so a token signed today can't be
+saved for use next week.
 
-| Protection                                 | macOS                                      | Windows                                   | Linux                                | When it's missing                                                                                                                                            |
-| ------------------------------------------ | ------------------------------------------ | ----------------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Signing keys can't be exported             | Secure Enclave                             | TPM 2.0                                   | TPM 2.0                              | Use a security key such as a YubiKey. See [Decisions](#decisions) for machines with neither                                                                  |
-| Only the issuer binary can use its keys    | Keychain access tied to the code signature | No known equivalent                       | No known equivalent                  | Code running as the developer can use the keys directly and skip the issuer's checks. Unsandboxed code then has what a tampered issuer has (threat model A7) |
-| Other processes can't attach to the issuer | Hardened runtime                           | No known option for ordinary applications | Partial, through Yama `ptrace_scope` | Code running as the developer can read unsealed keys and credentials from the issuer's memory                                                                |
-| The issuer can identify the peer process   | Unix socket peer lookup                    | Named-pipe client process ID              | `SO_PEERCRED`                        | No fallback. Task identification depends on it                                                                                                               |
-| Presence                                   | Touch ID on the key                        | Windows Hello                             | No standard                          | Use the touch requirement on a security key                                                                                                                  |
-| The issuer's own approval window           | Native window                              | Native window                             | Native window                        | Separate work on each OS                                                                                                                                     |
+`grants init` runs the setup itself when Anthropic's `ant` CLI is installed
+and logged in. Otherwise it prints what to enter in the Console and asks for
+the ids that come back. Either way it needs an organization admin's login,
+and the owner does this outside any agent session. The ids aren't secret, and
+the issuer keeps them.
 
-Everything outside the macOS column is on the list of
-[claims to check](#claims-to-check).
+Two things about Anthropic's side shape the tooling:
 
-A security key works the same way on every platform, and its touch
-requirement gives real presence. It's the uniform fallback for both the key
-store and presence, at the cost of extra hardware.
+- It refuses every failed exchange with the same message, and gives the
+  reason only in the Console's history page. `grants doctor` tests each
+  grant and points there when one fails.
+- A public key registered inline is never refreshed. Adding a machine or
+  replacing a key means an admin adding the new key by hand.
 
-Each fallback has to be explicit. `grants doctor` reports which protections
-hold on the current machine, and the threat model records what each missing
-protection costs.
+Whether setup can feel light is the main product risk.
 
-## The gateway
+### The commands
 
-The gateway runs in the same signed binary as the issuer, and it handles every
-grant delivered by injection. The gateway does the following:
+| Command | What it's for |
+| --- | --- |
+| `grants init` | Make this project work on this machine. Does whatever is missing |
+| `grants approve` | Look at what a changed file would change, and approve it |
+| `grants seal <grant>` | Seal one grant's key again |
+| `grants doctor` | Say what works and what doesn't, with the fix for each |
+| `grants log` | Show what the issuer did recently |
+| `grants run <task> -- <command>` | Run a command as a task |
+| `grants agent -- <harness>` | Run an agent harness in its sandbox, as a task |
 
-- Attaches the credential to the outgoing request, in the headers the grant's
-  `:attach` names, replacing whatever the client put there. For a federated
-  grant, the gateway does the exchange itself and holds the token in memory.
-- Enforces operation rules, which are the methods and paths listed in a
-  grant's `:allow`.
-- Enforces budgets: a count of requests per task, and spend where the provider
-  reports it.
-- Holds the sealed static keys. Each key is encrypted to an enclave key, and
-  is only ever unsealed into the gateway's memory.
+On an ordinary day none of them is needed. The application declares its
+default task when it first uses a grant.
 
-A task reaches the gateway through a local base URL, which the `#grant`
-reference supplies. The URL contains a task token and the grant's name:
+### What it records
 
-```
-http://127.0.0.1:7465/t/<task-token>/plaid-api
-```
+The issuer logs every task that starts or is refused, every exchange, and
+every request the gateway turns away. The log is there to make the tool
+debuggable. Code running as the developer can alter it, so the provider's own
+record is the one to trust.
 
-The token is in the URL because a base URL is the one setting nearly every
-SDK accepts, and many accept no extra header. It works only at this gateway
-and only while the task is running, so it's worthless on any other machine.
-An agent in a sandbox reaches the gateway through the sandbox's own egress
-proxy.
-
-The gateway is the only thing that can enforce a budget, so a budget holds
-only for a grant delivered by injection. `grants doctor` reports a `:budget`
-on a grant delivered by reference as an error. The limit that holds
-everywhere is one the provider enforces, such as a spend limit on an
-Anthropic workspace, and setup creates that where the provider has one.
-
-Other gateways scope by host and have no budgets (see
-[prior art](prior-art.md)). In this design, operation rules and budgets are
-the only controls over what a grant is used for, so they're where this gateway
-has to do better than the others.
-
-## Clients in other languages
+## Processes that aren't Clojure
 
 Only a Clojure process can read `#grant`. A Node script, a Worker under
 `wrangler dev`, and a shell tool all take their settings from the
@@ -764,546 +528,382 @@ environment, and they reach their grants through the launcher:
 ```clojure
 ;; grants.edn
 :tasks
-{:dev {:grants  [:llm/claude]
-       :command ["bb" "dev"]
-       :env     {"ANTHROPIC_BASE_URL" :llm/claude}}}
+{:dev {:grants [:llm/claude]
+       :env    {"ANTHROPIC_BASE_URL" :llm/claude}}}
 ```
 
-`grants run dev` starts the command with each variable in `:env` set to the
-gateway's base URL for the named grant. The grant is delivered by injection,
-so the variable holds a loopback URL and a task token. Neither is a
-credential anywhere else, and no key passes through the environment.
-Principle 4 objects to environment variables as a way to carry secrets, and
-this use carries none.
+`grants run dev -- bb dev` starts the command with each variable in `:env`
+set to the gateway's base URL for the named grant. The variable holds a
+loopback URL and a task token. Neither is a credential anywhere else, and no
+key passes through the environment.
 
-A process that needs a real credential in a variable is the exception that
-[Decisions](#decisions) already records. `grants run` supports it for
-by-reference grants and says so each time it does.
+Two details come from how SDKs behave:
 
-The socket protocol is documented, so a client in another language can speak
-to the issuer directly. A Babashka client is the first one worth having,
-because `bb` tasks start most of these projects.
+- Some SDKs expect a path in their base URL. A vector adds one:
+  `{"OPENAI_BASE_URL" [:llm/openai "/v1"]}`.
+- An SDK that is given a base URL and no key may go looking for a real
+  credential on disk. For providers it knows, the launcher also sets the
+  SDK's key variable to a placeholder, which wins over every other source.
+
+A tool that needs a real credential in a variable or a file is a case the
+first version doesn't cover. [later.md](later.md) keeps the notes on
+credential helpers.
 
 ## Tests and machines with no issuer
 
-A test run, a CI job without a provider login, and a contributor's machine
-with no issuer all have to load a config that contains `#grant`. The
-application chooses a resolver when it reads its config:
+A test run, a CI job, and a contributor's machine with no issuer all have to
+load a config that contains `#grant`. Loading is never the problem, because
+reading the tag does nothing. A test that derefs needs a value, and the test
+config supplies one in place of the grant:
 
 ```clojure
-(grants/read-config "config.edn"
-                    {:resolver (grants/fake
-                                {:llm/claude {:base-url "http://localhost:9999"
-                                              :headers  {}}})})
+;; test config
+{:extraction {:client #grant/fake {:base-url "http://localhost:9999"
+                                   :headers  {}}}}
 ```
 
-A fake resolver returns the values it was given and never opens a socket or
-a network connection. With no resolver named, the library looks for a
-platform identity, and then for the local issuer. If it finds neither, the
-deref fails with an error that names the grant. It never falls back to a
-fake, because a test that silently ran against nothing would pass for the
-wrong reason.
+`#grant/fake` returns a reference with a fixed value and never opens a socket
+or a network connection.
 
-## The remote minter
-
-The minter is a small service that holds minting roots, so that no laptop has
-to.
-
-```mermaid
-sequenceDiagram
-    participant W as Gateway on the laptop
-    participant I as Issuer on the laptop
-    participant M as Remote minter
-    participant R as Repository at main
-    participant P as Provider
-    W->>I: sign an identity for this task
-    I-->>W: signed identity
-    W->>M: identity and the grant's name
-    M->>R: read grants.edn at main
-    R-->>M: policy
-    M->>P: mint a key with the grant's scope
-    P-->>M: scoped key
-    M-->>W: scoped key and its expiry
-    Note over W,M: when the task ends, the minter revokes the key
-```
-
-The minter reads policy from the protected main branch, not from the laptop's
-working copy. As a result, widening a minted grant requires a merged pull
-request. Octo STS works the same way for GitHub.
-
-The minter is optional. Without one, a provider that can only mint falls back
-to a static bounded key, or is out of scope.
-
-### Where it runs
-
-The minter has no host yet. Whatever runs it has to meet two conditions:
-
-- It can sign with a root and can't read it. A GitHub App's root is an RSA
-  key, so this means a key service that signs on request and never releases
-  the key.
-- No login kept on a developer's laptop can deploy to it or change what it
-  runs.
-
-It should also cost one person close to nothing to run, with no machine to
-patch.
-
-A Cloudflare Worker fails both conditions. Code deployed to a Worker can read
-the Worker's secrets, so anyone who can deploy to it can copy a root. And
-`wrangler` keeps its deploy login in the home directory of the laptop the
-root was meant to stay off. The candidates are listed under
-[Open questions](#open-questions).
-
-One minter serves all of an owner's applications.
-
-The first root is a GitHub App's private key. With it the minter creates
-installation tokens that last an hour and cover only the repositories and
-permissions a grant lists. The same App reads `grants.edn` from each
-application's main branch, so the App is installed on the application's
-repository as well as on the repositories its grants name.
-
-### Who may call it
-
-The minter accepts three kinds of caller, and treats each one's proof the
-way a provider would:
-
-| Caller                 | Proof                                         | How the minter checks it                       |
-| ---------------------- | --------------------------------------------- | ---------------------------------------------- |
-| A task on a laptop     | A JWT from that laptop's issuer               | Against the issuer's public key, held in the minter's config |
-| A CI job               | The CI system's OIDC token                    | Against the CI system's published keys         |
-| A person in a browser  | The JWT their access proxy adds to a request  | Against the proxy's published keys and audience |
-
-For the first two, the request names an application, a task, and a grant,
-and the minter issues the grant if the file at main gives it to that task.
-
-### People in browsers
-
-A browser application can't hold an issuer key or read a config, and its
-user is a person and not a task. Today such an application stores a personal
-access token on every device that uses it.
-
-With the minter behind an access proxy such as Cloudflare Access, the proxy
-handles the login and adds a signed JWT to each request. The application
-asks the minter for a grant, and the minter checks the JWT and returns a
-token that lasts an hour. In `grants.edn`, a task marked `:caller :person`
-lists the grants a logged-in person may have:
-
-```clojure
-:tasks
-{:publish {:caller :person
-           :grants [:content/write]}}
-```
-
-The proxy's policy decides which people can log in. The file decides what a
-logged-in person gets. The device ends up holding a login session and a
-token that expires within the hour.
-
-How the browser's request reaches the minter depends on where the minter
-runs, which is open.
+With no fake, the library looks for a task URL from the launcher, then for
+the local issuer. If it finds neither, the deref fails with an error that
+names the grant. It never falls back to a fake, because a test that silently
+ran against nothing would pass for the wrong reason. A test that needs the
+real thing, such as one that calls a provider's sandbox, can ask the library
+whether an issuer is there and skip when it isn't.
 
 ## Agents
 
-An agent task doesn't need a sandbox. Each sandbox level closes more of the
-routes around its grants:
+An agent task doesn't need a sandbox. Each level closes more of the routes
+around its grants:
 
-| Level                 | What it encloses                                        | What it adds                                                                                                                                   |
-| --------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| No sandbox            | Nothing                                                 | Nothing. The agent is effectively the developer                                                                                                |
-| Command sandbox       | The agent's shell commands and the processes they start | Those commands can't read the listed credential files, send traffic past the gateway, or reach another task's REPL port or the issuer's socket |
-| Whole-harness sandbox | Everything the harness runs                             | The same limits on the harness's own tools, MCP servers, and hooks                                                                             |
+| Level                 | What it encloses                                        | What it adds                                                                                                            |
+| --------------------- | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| No sandbox            | Nothing                                                 | Nothing. The agent is effectively the developer                                                                         |
+| Command sandbox       | The agent's shell commands and the processes they start | Those commands can't read the listed files, reach the control socket or another task's ports, or reach a host the task doesn't list |
+| Whole-harness sandbox | Everything the harness runs                             | The same limits on the harness's own tools, MCP servers, and hooks                                                      |
 
-`grants run agent` starts at the command sandbox. Claude Code and Codex each
-ship one, so this level needs no extra software. The launcher starts the
-harness with sandbox settings generated from `grants.edn`, so turning the
-sandbox on isn't a manual step. The generated settings do the following:
+`grants agent -- claude` starts the harness as the `:agent` task with its
+command sandbox turned on, using settings it generates:
 
-- Deny reads of a list of known credential files, such as SSH keys and the
-  stored logins of `gh` and `aws`. Where a tool keeps its config beside its
-  credential, the list names the credential file and leaves the directory
-  readable.
-- Allow egress only to the gateway.
-- Keep other localhost ports and Unix sockets closed. That covers other
-  tasks' REPL ports. It also covers the issuer's socket, which a process
-  needs to start a task or declare one.
-- Turn off the harness's option to run a command outside the sandbox.
+- The issuer opens a loopback port for this session alone, and the settings
+  make that port the sandbox's proxy. Sandboxed commands can connect to it
+  and to nothing else on the machine or the network. The port serves only
+  this session's task, so a token that another task left in a log file is
+  useless inside the sandbox.
+- Reads are denied for a list of credential files and for the issuer's own
+  directory.
+- The control socket and every other Unix socket stay closed.
+- The harness's option to run a command outside the sandbox is turned off,
+  and settings from the repository are not loaded.
 
-Denying reads of the whole home directory outside the project is an optional
-tightening of this level. It needs a re-allow list for the project's
-toolchain, covering config files and dependency caches.
+Because the session's port is the sandbox's proxy, every other outbound
+request arrives there too, and the gateway refuses it. A task can list hosts
+it needs, such as a package registry, and the gateway then tunnels to those
+hosts only:
 
-The threat model's [sandbox levels](threat-model.md#sandbox-levels) section
-lists what each level leaves open.
-
-Today, giving a cloud agent access usually means pasting long-lived keys into
-the platform's settings. Here's a sketch of how to do it without pasting a
-secret:
-
-1. When the session starts, the sandbox generates a key pair.
-2. The developer's issuer signs a delegation that names the public key, the
-   task, and an expiry.
-3. The sandbox then acts as that task.
-
-This sketch has two known limits. First, a provider that accepts a plain OIDC
-token accepts it from whoever holds it, so the delegation has to be short.
-Second, renewing the delegation during a long session requires an issuer that
-the sandbox can reach, and a laptop isn't reachable. A hosted or self-hosted
-issuer would cover that, but it hasn't been designed yet.
-
-## Life of a grant
-
-A grant moves through the following states:
-
-```mermaid
-stateDiagram-v2
-    [*] --> Requested: task derefs a reference or calls the gateway
-    Requested --> Refused: task not in policy, or file not approved
-    Requested --> AwaitingPresence: grant needs presence
-    AwaitingPresence --> Refused: no fingerprint
-    AwaitingPresence --> Issued: fingerprint given
-    Requested --> Issued: identity signed and exchanged
-    Issued --> Issued: renewed before expiry
-    Issued --> Ended: TTL passes, task exits, or key revoked
-    Refused --> [*]
-    Ended --> [*]
+```clojure
+:agent {:grants [:llm/claude]
+        :egress ["repo.clojars.org" "repo1.maven.org"]}
 ```
 
-## Providers today
+The list is part of the committed file, so widening it is reviewed and
+approved like any other access. The default is no hosts. A listed host is a
+way out for any data the session can read, and on a shared host it's a way
+out to anyone's account there.
 
-| Source   | Providers                                                                                                                                         | Stored secret                        |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| Federate | AWS, Google Cloud, Anthropic, OpenAI, Tailscale, Postgres `cert` auth, SSH certificates; Stripe in private preview from AWS and Google Cloud only | None                                 |
-| Mint     | GitHub Apps, Cloudflare, Vercel, PlanetScale; SendGrid, Resend, Neon, Supabase, Twilio, and OpenRouter with no expiry                             | A root in the remote minter          |
-| Static   | Stripe outside the preview, Plaid, Postmark, Sentry, Linear, Hugging Face                                                                         | One bounded key in the local gateway |
+This was tested with Claude Code, and [checks.md](checks.md) has the results.
+Codex's sandbox works differently and hasn't been taken this far, so the
+first version supports Claude Code only. The tests also showed what a command
+sandbox leaves open, and the threat model lists it. The two that matter most:
 
-Most of these rows come from search summaries. [Prior art](prior-art.md) marks
-which ones were read at the source.
+- The login Keychain is reachable from inside the sandbox. No setting closes
+  it, so a login that a tool keeps there is exposed to a sandboxed command.
+- The repository's own hooks and MCP servers run outside the sandbox unless
+  the harness is told not to load the repository's settings.
 
-## Relationship to secrets
+Anything the owner lets a session run outside its sandbox is a hole as big as
+whatever the agent can steer. A command that pushes to a remote obeys the
+repository's config, which the agent can write.
 
-The manifest idea from `secrets` carries over, and gets simpler. `secrets`
-needed keyed hashes so that a diff could show a value had changed without
-revealing it. `grants.edn` has no values, so it is its own manifest.
+The agent's own model calls stay on the harness's own login. A grant in the
+`:agent` task covers the code the agent runs, such as an application's tests,
+and nothing changes about how the harness is billed.
 
-CI still has a use for a check that needs no identity: one that confirms the
-file is valid and that the application's config refers only to grants that
-exist.
+The sandbox is someone else's software, and turning it on changes how an
+agent session works. [use-cases.md](use-cases.md) lists what that means on
+the owner's machine, and one part of it is still an open question below.
+
+## Live keys and application data
+
+Some applications have no production other than the laptop. A personal
+finance application that runs at home needs the live key for its bank data on
+the same machine where its developer writes code. Refusing that key wouldn't
+remove it from the laptop. It would stay where it is now, in an encrypted
+store whose key any process can read.
+
+This section describes what the signed build adds. In the unsigned build a
+task that lists a grant with `:bound :live` can't start.
+
+### One rule
+
+A grant with `:bound :live` is sealed to a third enclave key, one that needs
+a fingerprint for every use. **A task that lists a live grant takes one
+fingerprint to start.** The issuer asks in its own window, which names the
+application, the task, the directory, and the program that asked. The live
+values are unsealed for that one run of the task, held in the issuer's
+memory, and wiped when the task ends.
+
+A long-running server asks once when it starts, and its scheduled work runs
+unattended after that. Restarting it asks again. An application has at most
+one live task at a time, so a second attempt to start one is refused and
+never raises a prompt.
+
+Sealing a live key is itself done in the issuer's window with a fingerprint.
+That act is what puts a live key on a machine, and nothing in the repository
+can do it.
+
+### Where live runs
+
+A fingerprint at the start says nothing about code that changes afterwards. A
+sandboxed agent edits code in the project, and if the owner's live task runs
+from that same working copy, it runs what the agent wrote. No sandbox can
+close that, because writing code is the agent's job.
+
+So a live key is sealed for one directory, and the issuer starts a live task
+only from there. That does two things. It keeps the owner from starting live
+out of an agent's workspace by mistake. And it tells `grants agent` which
+directory to protect: a session is never given write access to it, or to a
+version-control store inside it.
+
+This is not a boundary against unsandboxed code, which can name any directory
+it likes. And against a sandboxed agent it holds only as far as the agent
+can't change what that directory holds or loads: its files, its
+version-control store, and the dependency caches its JVM reads. A separate
+clone, with its own store and caches, is the arrangement that satisfies all
+three. [use-cases.md](use-cases.md) works through the choice for
+finance-aggregator.
+
+### Application data
+
+Some secrets don't come from a provider's dashboard. An application that
+links a bank account receives an access token for that account, and it has to
+keep the token for years. Applications usually encrypt such tokens with a key
+from their secret store, which puts the key back on disk beside the data.
+
+A wrap grant gives the application encryption without the key:
+
+```clojure
+;; grants.edn
+:connections/live {:provider :wrap :bound :live}
+```
+
+```clojure
+(grants/wrap   tokens "access-prod-1234")  ;; => "gw1:k7:..."
+(grants/unwrap tokens blob)                ;; => "access-prod-1234"
+```
+
+The issuer creates a wrapping key the first time the grant is used, and seals
+it the way it seals any other value. `wrap` and `unwrap` run inside the
+issuer, and the key never reaches the task. A wrap grant with `:bound :live`
+follows the one rule above: its key opens with the fingerprint that starts
+the task. Wrap grants arrive with the signed build.
+
+Wrapping protects the stored copies: the database file, its backups, and
+anything that syncs them. It doesn't protect against the running task, which
+can unwrap whatever it's allowed to. A task that doesn't list the grant can't
+open a copy of the database, which is what an honest task for exercising the
+application against copied data relies on.
+
+An enclave key can't be exported, so wrapped data doesn't survive the loss of
+the machine. The default answer is to acquire the data again, since a bank
+can be linked again. [later.md](later.md) keeps the design for a recovery
+key.
+
+## Two builds
+
+The Secure Enclave ties a key to the device and not to the program that made
+it. Any process that can read a key's stored form can use the key. This was
+tested, and it changes what the issuer can promise.
+
+What ties a key to one program on macOS is the keychain's access group, and
+that takes a bundle signed with an Apple Developer ID, a provisioning
+profile, and notarization. So there are two builds:
+
+| Protection                                               | Unsigned build | Signed build |
+| -------------------------------------------------------- | -------------- | ------------ |
+| Keys can't leave the machine                             | Yes            | Yes          |
+| A copy of the disk holds nothing usable elsewhere        | Yes            | Yes          |
+| A command in Claude Code's sandbox can't use the issuer's keys or records | Yes, because the generated settings deny the issuer's directory | Yes, and the OS enforces it without the sandbox |
+| Unsandboxed code can't use the issuer's keys directly    | No             | Yes          |
+| Approvals and other records can't be forged              | No, they're files | Yes, they're keychain items only the issuer can write |
+| A fingerprint is needed for a live key                   | Not offered    | Yes          |
+| Other processes can't read the issuer's memory           | Injection is blocked. Replacing the binary isn't | Yes |
+
+The unsigned build is where the project starts. It removes long-lived keys
+for every provider that federates, keeps sealed keys useless off the machine,
+and contains a sandboxed agent. Against unsandboxed code running as the
+developer it promises less. Such code can use the keys while it runs, but it
+can't take one off the machine, a federated credential dies in minutes, and a
+signed identity is only good for the few minutes the provider's own rule
+allows.
+
+The signed build is what makes a fingerprint mean something against that same
+code, and it's what live keys wait for. It costs an Apple Developer Program
+membership. Someone who builds the signed bundle from source with their own
+membership gets the same protections for their own keys.
+
+## Production
+
+The same `grants.edn` describes production. What changes is who answers for a
+grant, and the application chooses that explicitly when it reads its config,
+never by detection:
+
+- Where the platform gives a workload an identity, the library exchanges it
+  for a credential and renews it. Fly.io does this, and its identity is in a
+  form Anthropic accepts.
+- Where it doesn't, or the provider has only keys, the grant reads the
+  platform's own secret store.
+
+No application is deployed with grants yet, so this part is designed only as
+far as [later.md](later.md) records. The reference's map is the contract that
+keeps it open: production code that returns a different `:base-url` and real
+`:headers` fits it unchanged. Production is also where a second reader of
+`grants.edn` first appears, since there is no daemon there to read it.
 
 ## Decisions
 
-**Language and shape** (2026-11-11). `grants` is a Clojure library backed by
-a native daemon written in Go. The daemon is the issuer, the gateway, and the
-launcher. It can't run on the JVM: it needs hardware key stores and a code
-signature, and the threat model's defence against a tampered issuer (A7) asks
-for a small codebase with few dependencies. A documented socket protocol and
-the `grants.edn` format form the language-neutral boundary between the
-daemon and its clients, so clients in other languages can follow later.
-Injection already works from any language, because a task only needs a base
-URL and a task token.
+All of these were made on 2026-11-11. Most came out of a review that tested
+the design's claims on the owner's machine, read it against the real
+applications, and then had the result read again by fresh reviewers.
+[checks.md](checks.md) has the evidence.
 
-Go was chosen over Rust because its TPM support is pure Go, while Rust's main
-TPM crate wraps a C library, and both need native code for the Secure Enclave.
-Rust could reliably wipe keys from memory, but on macOS the code-signature
-boundary already keeps other processes out of the issuer's memory. A Clojure
-daemon built with GraalVM `native-image` would have shared code with the
-library, but it would reach the Secure Enclave and TPM through hand-written
-FFM bindings, where Go has existing libraries.
+**Language and shape.** `grants` is a Clojure library backed by a native
+daemon. The daemon is a Go binary with no third-party modules, plus a small
+Swift library, linked into the same binary, for everything Apple-specific. Go
+is chosen for its standard library: it covers the gateway, JWT signing, and
+strict JSON, so the security-critical code has no dependencies to audit. The
+enclave code goes through CryptoKit in Swift because CryptoKit's stored key
+format is documented. Reaching the enclave from Go through Objective-C works,
+but restoring a key that way depends on an undocumented attribute. A Swift
+application as the whole daemon was turned down because Swift has no HTTP
+server in its standard library. A separate helper process for the enclave was
+turned down because the link between the two would become a boundary of its
+own.
 
-**Third-party tools** (2026-11-11). `psql`, `aws`, `gh`, `git`, and the agent
-harness don't read an EDN config, so each one uses whatever hook it already
-has:
+**No profiles.** A sandbox key and a live key are two named grants. The
+earlier design had a `#profile` tag in the file and a profile on each task.
+The first real application showed two profile systems that had to agree, the
+application's and the file's, with nothing checking that they did. The
+application's config already chooses per environment, so the file doesn't
+need to.
 
-- A tool that supports an on-demand credential helper gets one. Examples are
-  git credential helpers, AWS `credential_process`, Docker credential helpers,
-  and kubectl exec plugins.
-- A tool whose base URL can point at the gateway, such as an agent harness,
-  gets injection. The only thing it holds is a task token that works at this
-  gateway alone.
-- For a tool that reads only environment variables, `grants run <task> --
-  <command>` sets them for that one child process. This breaks principle 4,
-  narrowly, and it's a documented fallback in the spirit of principle 10.
-- `psql` with `cert` auth reads its certificate and key from files, so it gets
-  a private temporary file that lasts only as long as the task. That's
-  another explicit trade-off.
+**Every grant on a laptop goes through the gateway.** The earlier design let
+an application task hold a short-lived credential and renew it. Sending
+everything through the gateway means the task holds nothing, the library has
+no renewal logic, a sandboxed process uses the same path as any other, and
+operation rules apply to every grant. The cost is a proxy in the request path
+of every call. Holding a credential comes back if a protocol other than HTTP
+needs it.
 
-**Editor jack-in** (2026-11-11). A process the launcher didn't start can
-declare its own task, and a project names a default task for its REPL. Inside
-a sandbox the launcher requirement mattered. Outside one it added friction
-and no protection, because unsandboxed code can run the launcher anyway. See
-[Identifying the task](#identifying-the-task).
+**A task is a held connection, and the client makes its token.** A process
+declares its task on the control socket and the task ends when the connection
+closes. This replaces matching a peer process to a launch, and it's the same
+for a command the launcher started and a process that declares itself.
+Because the client chose the token, it can declare the same task again after
+the issuer restarts, and nothing that holds the task's URL has to change.
 
-**The remote minter is built second, and not on a Worker** (2026-11-11). A
-project starts without one, and a provider that can only mint falls back to a
-static bounded key or stays out of scope. The minter is designed now because
-one of the three [use cases](use-cases.md) can't lose its personal access
-token without it, and because a browser application needs a caller the rest
-of the design doesn't have. Octo STS is the model for its policy, which it
-reads from the repository at main. It's built after the first spike.
+**One approved version of the file.** Approving by directory or by file bytes
+would ask again for every workspace and every comment edit. Keeping every
+version ever approved would let an old, wider file come back unasked. One
+approved hash of the canonical form asks exactly when access changes.
 
-A Cloudflare Worker was considered as its host and turned down. A Worker's
-code can read its secrets, and the `wrangler` login that deploys it sits on
-the laptop, so the root would be one deploy away from the machine it was
-meant to stay off. One Cloudflare account would also hold the login policy
-for people, the minter's code, and the root, with nothing separating them.
-An application's own Worker minting its own tokens has the same flaw.
-[Where it runs](#where-it-runs) gives the conditions for a host. Which host,
-and whether a remote minter is needed at all, is an
-[open question](#open-questions).
+**A grant that isn't ready doesn't stop its task.** A missing key on a new
+machine used to fail the whole task, which took away grants that had nothing
+to do with it. Each grant reports its own state, with the command that fixes
+it.
 
-**Production that isn't federated yet** (2026-11-11). In production, `#grant`
-can resolve by reading a static secret from the platform's own secret store.
-The application's config stays the same while each provider moves to
-federation. This is a fourth source, used only in production, alongside
-federate, mint, and static. On the platforms these projects deploy to it's
-the common case and not a stopgap: Workers has no workload identity, and
-Plaid has nothing to federate with. [Production targets](#production-targets)
-says how a grant maps to a stored secret.
+**A sealed key is bound to its host and header.** The approval prompt was the
+only check on a change to `:host`, and people approve prompts they expect.
+Recording the destination when the key is sealed takes that decision away
+from the prompt.
 
-**A reference yields a map** (2026-11-11). For an HTTP API the value is a
-base URL and a map of headers. A string was enough while every credential
-was one bearer token in one known header. It stops being enough when
-federation changes which header carries the credential, and when a provider
-needs two.
+**Live is a bound, and it means a fingerprint at task start.** The earlier
+design asked for the fingerprint when a live key was first used, and left
+wrapped live data open with no fingerprint at all. One prompt at the start
+covers everything live that the task lists, and it comes at a moment the
+owner chose. A separate opt-in command was dropped, because sealing a live
+key in the issuer's window already is one.
 
-**The issuer does every laptop exchange** (2026-11-11). The library on a
-laptop is a socket client. It keeps exchange code only for production and
-CI, where there is no issuer, and for Anthropic that code is one POST.
+**The bound stays required.** A flag that marks only live keys would be one
+key fewer to write, but forgetting it would be the unsafe direction.
 
-**Presence belongs to a grant** (2026-11-11). A task can still carry
-`:approval :presence` as shorthand. Per-grant presence lets a REPL hold a
-migration grant without putting its other grants behind Touch ID, and it's
-what a live key needs.
+**A fingerprint isn't a claim in the token.** A provider rule can't see which
+key signed a token, so a claim is only as strong as the ordinary signing key.
+If a provider ever needs to require a fingerprint, the fingerprint key is
+registered as a separate issuer.
 
-**Static keys are bounded, and live keys need an opt-in** (2026-11-11). A
-rule that allows only test-mode keys doesn't fit two real cases. OpenRouter
-has no test mode, so its bounded form is a spend-capped key. And an
-application whose only production is the laptop needs its live key there,
-where the alternative to sealing it is the encrypted store this project set
-out to replace. The opt-in is kept per machine, like the software-key
-opt-in, so the repository can't grant it.
+**Two builds.** The first version is unsigned and says plainly what that
+means. Signing comes with live keys.
 
-**Application data gets a wrap operation** (2026-11-11). A static key
-delivered by reference isn't allowed, and a data encryption key handed to
-the application would be exactly that. Wrapping inside the issuer keeps the
-rule intact.
+**One command for setup, and shared provider setup by default.** Setup is the
+main product risk, so `grants init` does every missing step, and a new
+application adds one rule at Anthropic and nothing more.
 
-**Launching with a base URL is a first-class path** (2026-11-11). Two of
-the three use cases include a process that isn't Clojure. Under injection
-the launcher puts no secret in the environment, so this path doesn't need
-the apology that the by-reference fallback does.
+**Launching stays out of the file.** A task lists access. The command to run
+is given to `grants run`, where commands already live, and the agent launcher
+is its own command and not a task name with a special meaning.
 
-**Parity** (2026-11-11). The `#grant` reference supplies the base URL, so an
-application that reads its URL from config reaches the gateway locally and the
-real endpoint in production, with no code changes. Budgets and operation rules
-apply only locally, and that difference is accepted. Application tasks get
-delivery by reference by default. Injection is for agents and static keys.
+**The agent's own model calls stay on its own login.** Moving the harness to
+a federated grant works mechanically, but it changes billing and turns off
+features tied to the harness's login.
 
-**Machines with no hardware key store** (2026-11-11). Linux VMs and WSL often
-have no TPM, and not everyone has a security key. On such a machine the issuer
-can run with a software key, but only when per-machine config opts in.
-`grants.edn` can't opt in. `grants doctor` and every issuance warn that the
-key is in software, and grants that need presence are refused on that
-machine, because a software key can't prove presence.
+**The gateway is the sandbox's proxy.** The sandbox blocks direct connections
+to loopback and lets JVM clients through only with a setting that opens every
+local port. It has to let commands reach its proxy, though, and a session
+port that is the proxy needs nothing else opened.
 
-**Decoy credentials are deferred** (2026-11-11). A credential an agent finds
-in `.env` or `~/.aws` could be a planted decoy, so any use of one would be a
-real alarm. That only works once no real secrets are on disk, and existing
-tools such as `canaryhook` already cover the idea.
+**One reader of the file.** On a laptop only the daemon reads `grants.edn`,
+so only the daemon needs the strict reader. A second one waits for
+production.
 
-**Sandbox levels** (2026-11-11). A sandbox is optional, and `grants run agent`
-starts at the harness's own command sandbox with a deny list of credential
-files. Requiring more would put a migration in front of anyone trying grants.
+**A reference yields a map.** For an HTTP API the value is a base URL and a
+map of headers. A string stops being enough when a provider needs two
+headers.
 
-Denying the whole home directory was tried on macOS, with a Seatbelt profile
-that made it unreadable outside the project. `git` and `jj log` failed on
-`~/.gitconfig`, `clojure` wouldn't start, `uv` couldn't open its cache, and
-`gh` and `docker` couldn't read their config. An interactive `zsh` came up
-without the functions from its startup file, and `jj` reported an empty user
-name with no error. Everything that broke was config or a dependency cache, so
-the fix is a re-allow list for each toolchain. Building and maintaining those
-lists is the cost, which is why whole-home denial is a tightening and not the
-default.
+**`#grant` does nothing when read.** Applications load config in tests, in
+reloads, and in tools that must not touch the issuer.
 
-The command sandbox is the starting level because Claude Code and Codex
-already ship one. It encloses shell commands only, and the threat model
-records what that leaves open. Without any sandbox, grants still improves on a
-stored key, because an agent finds no stored secret that it can read.
+**No remote minter, browser callers, or cloud agents for now.** One use case
+wanted them, and it can keep its personal access token.
+[later.md](later.md) keeps the designs.
 
 ## Open questions
 
-1. **What the starting sandbox level has to allow.** Fetching a dependency
-   needs a registry host and a writable cache, and `git` over SSH doesn't go
-   through an HTTP proxy. Each exception reopens a route: an allowed host is a
-   way out for data, and a cache the agent can write to is a way into whatever
-   task loads from it next. Which exceptions do the generated settings make by
-   default?
-2. **The name.** `grants` is a working title. Check that it's free on Clojars
+1. **The name.** `grants` is a working title. Check that it's free on Clojars
    and as a Go module path.
-3. **Opening wrapped values at the gateway.** A task that unwraps a bank
-   token holds it for as long as the request takes. The gateway could do the
-   unwrapping instead: the task sends the wrapped blob in its request, and
-   the gateway swaps in the real token on the way out. It could also wrap a
-   token in a provider's response before the task sees it. The task would
-   then never hold the token at all. Both mean rewriting request and
-   response bodies for each provider. Is that worth building, and for which
-   providers?
-4. **A live task that restarts unattended.** A live key is unsealed with a
-   fingerprint when its task starts. A server that comes back after a reboot
-   or a crash waits for that fingerprint, and its scheduled work doesn't run
-   until someone gives it. Is that the right default for a server at home?
-5. **Who a minted GitHub token acts as.** An installation token acts as the
-   App. A publishing tool that commits with one records the App as the
-   committer, where a personal access token recorded the person. A user
-   token from the same App would act as the person, but it comes with a
-   refresh token that lasts months and has to be stored on the device.
-6. **More than one machine.** Each laptop registers its own issuer with
-   every provider and with the minter. Two laptops is a list. Is there a
-   lighter way to add a machine than repeating setup?
-7. **How the issuer is signed and shipped on macOS.** Apple's documentation
-   says a daemon can't carry a provisioning profile, and that a daemon which
-   needs a restricted entitlement has to be wrapped in an app-like bundle. If
-   the keychain access group that ties a key to the issuer is such an
-   entitlement, the issuer is a bundle signed by one Apple developer team,
-   and a copy built from source has no code-signature boundary. A Secure
-   Enclave key made through CryptoKit doesn't help by itself, because its
-   stored form appears to be bound to the device and not to the application.
-   Does this change the choice of Go for the macOS issuer, and how do other
-   people install it?
-8. **`#grant` inside a sandbox.** A sandboxed process can't reach the
-   issuer's socket, so a Clojure process that an agent starts can't resolve a
-   reference the way the library does elsewhere. It can reach the gateway.
-   Does the library resolve injected grants from a gateway URL that the
-   launcher supplies, and are by-reference and wrap grants unavailable there?
-9. **When a declared task ends.** A task token works only while its task is
-   running, and a live key stays unsealed until its task ends. For a process
-   the launcher started, that's the process exiting. For a process that
-   declared its own task, is it the socket connection closing?
-10. **Which file a process means.** A process that declares a task names its
-    project. Worktrees, jj workspaces, and branches give one application
-    several `grants.edn` files at the same time. Does the issuer pin one file
-    for each application or one for each directory, and what does a second
-    repository get when it claims the same `:app`?
-11. **Binding a sealed key to its host.** The host a sealed key is sent to
-    comes from `grants.edn`, so a change to `:host` retargets the key after
-    one approval. Recording the host when the key is sealed, and refusing to
-    send the key anywhere else until it's sealed again, would take that
-    decision away from the approval window. Is that worth the extra step when
-    a host really changes?
-12. **What `:allow` matches.** The rules are a method and a path. The design
-    doesn't say how the gateway treats `..` segments, percent-encoding, query
-    strings, or a trailing slash, and a path rule can't narrow an API that
-    puts the operation in the request body, such as GraphQL.
-13. **Two readers of one file.** The Go daemon reads `grants.edn` on a
-    laptop, and the Clojure library reads it in production. Neither the
-    file's schema nor the socket protocol is written down yet. What keeps the
-    two readers in agreement: a written schema with shared test files, or
-    something else?
-14. **What an agent's own model calls run on.** The `:agent` task lists
-    `:llm/claude`. If that covers the harness's own model access, the harness
-    moves from the developer's subscription login to API billing in a Console
-    organization. If it covers only the code the agent runs, the harness
-    keeps its own login, which is one of the developer's logins that this
-    tool doesn't manage.
-15. **Where the remote minter runs, and who needs it.**
-    [Where it runs](#where-it-runs) gives the conditions and rules out a
-    Worker. There are three candidates. A function in a cloud account whose
-    key service holds the root meets both conditions, and costs an account to
-    run and a login for people to build. A hosted service such as Octo STS
-    costs nothing to run, puts a third party's App on the repositories, and
-    covers only GitHub. The third is no remote minter: a root that is itself
-    bounded, such as the key of a GitHub App installed on a few repositories,
-    is sealed on the laptop and used only by the issuer. That has the
-    exposure of a sealed live key, gives up policy read from main, and serves
-    tasks on a laptop and nothing else. Of the three use cases, only
-    website-admin's publishing needs a person in a browser, and GitHub's own
-    user tokens could meet that outside this tool. Does the design keep that
-    caller?
-
-## Claims to check
-
-The following claims come from memory or from search summaries:
-
-- AWS IAM accepts ES256-signed tokens from an OIDC provider. This matters
-  because the Secure Enclave signs only with P-256.
-- AWS Roles Anywhere accepts ECDSA P-256 certificates from an external CA.
-- Google Cloud workload identity federation accepts an uploaded JWKS, with no
-  public issuer endpoint.
-- OpenAI accepts ES256. Its federation guide doesn't list algorithms.
-- On macOS, a Secure Enclave key can be used only by the signed binary that
-  created it.
-- On macOS, a process can't attach to another process of the same user when
-  the target is signed with the hardened runtime.
-- On macOS, a daemon can identify the peer process on a Unix socket reliably
-  enough to match it to a launched task.
-- On Windows and Linux, a TPM 2.0 can hold a non-exportable P-256 signing
-  key.
-- Neither Windows nor Linux can restrict a TPM key to one signed binary.
-- On Linux, Yama `ptrace_scope` can stop processes of the same user from
-  attaching to the issuer. Windows has no equivalent for ordinary
-  applications.
-- `SO_PEERCRED` on Linux, and the named-pipe client process ID on Windows,
-  identify the peer process reliably enough to match it to a launched task.
-- Windows Hello can require a biometric for every use of a key.
-- A YubiKey's PIV applet holds P-256 keys and can require a touch for every
-  use.
-- `google/go-tpm` talks to the TPM directly, with no C library.
-- Smallstep's `go.step.sm/crypto` has working KMS backends for the macOS
-  Secure Enclave and for TPMs.
-- GitHub App keys must be RSA, which the Secure Enclave can't hold.
-- A JDBC Postgres connection can take its client certificate and key from
-  memory, without a file on disk.
-- Every provider row in [prior art](prior-art.md) that's marked "summary".
-- Claude Code's command sandbox and Codex's permission profiles can each deny
-  reads of listed paths, limit egress to listed hosts, and keep localhost
-  ports and Unix sockets closed unless they're listed. Each product's
-  documentation says so, as read on 2026-11-11. Neither was tested.
-- Sandbox settings passed to a harness at launch can't be loosened by
-  settings in the repository.
-- Codex's network rules can allow one localhost port without allowing the
-  rest.
-- Anthropic's `workspace:inference` scope covers the Message Batches
-  endpoints. The scope table names Messages, Models, and the
-  OpenAI-compatible endpoint, and doesn't mention batches.
-- An Anthropic workspace can carry a spend limit, and the limit applies to
-  tokens issued through federation.
-- Workload identity federation is available to a Console organization with
-  one member.
-- Fly's OIDC issuer serves a discovery document that Anthropic can fetch,
-  and signs with an algorithm Anthropic accepts. Fly's page names neither.
-- Plaid accepts `PLAID-CLIENT-ID` and `PLAID-SECRET` as headers on every
-  endpoint, and `plaid-java` can be pointed at a loopback HTTP URL.
-- The Anthropic SDKs accept a base URL that has a path prefix and uses plain
-  HTTP on loopback.
-- A Secure Enclave key that requires a fingerprint can be used to unseal
-  data, and not only to sign.
-- Babashka can open a Unix domain socket.
-- `wrangler dev --var` sets a variable for a local run.
-- A cloud key service can import a GitHub App's RSA private key and sign an
-  RS256 JWT with it, without ever releasing the key.
-- Cloudflare Access adds a JWT to each request that a backend can verify
-  against the team's published keys.
-- A commit made with a GitHub App installation token is attributed to the
-  App.
-
-## First spike
-
-The first spike tests four assumptions: that an enclave key can replace an
-API key, that injection is workable for an agent, that a sealed key behind
-the gateway can stand in for a stored one, and that setup is light. It uses
-`finance-aggregator`, the first of the [use cases](use-cases.md), as its
-application. It has four parts:
-
-1. Build a local issuer with a Secure Enclave key, and register it with
-   Anthropic as a custom issuer, with its public key inline. The issuer
-   exchanges a signed identity for a token, and `finance-aggregator`
-   extracts a statement with it through `#grant :llm/claude`. The Keychain
-   item is deleted first.
-2. Make the same call through the gateway, with a request budget, from an
-   agent in a sandbox.
-3. Seal Plaid sandbox credentials, and run a transaction sync from
-   `finance-aggregator` through the gateway with `:allow` rules in force.
-   This part exercises the general HTTP provider, sealing, and a two-header
-   `:attach`.
-4. Count the steps from the application as it is today to both grants
-   working.
-
-Postgres `cert` auth isn't in the spike. None of the three applications
-uses Postgres, so it waits for one that does.
+2. **How a sandboxed agent runs a server.** An agent that starts a dev server
+   or an end-to-end test has to listen on a local port, and the one sandbox
+   setting that allows it lets its commands connect to every local port,
+   including another task's REPL. Running the server outside the sandbox
+   isn't an answer, because the server is code the agent wrote. This has to
+   be settled before agent sessions are built.
+3. **A live task that restarts unattended.** A server that comes back after a
+   reboot or a crash waits for a fingerprint, and its scheduled work doesn't
+   run until someone gives one. Is that the right default for a server at
+   home?
+4. **Which operations Anthropic's inference scope covers.** The scope's
+   documentation lists Messages, token counting, and Models, and doesn't
+   mention Message Batches. finance-aggregator's evaluations use batches. If
+   the scope excludes them, those runs need a rule with a wider scope or a
+   capped key behind the gateway.
+5. **Opening wrapped values at the gateway.** A task that unwraps a bank
+   token holds it for as long as a request takes. For a credential that
+   travels in a header, the gateway could unwrap it on the way out and the
+   task would never hold it. SimpleFIN's access URLs are the case that would
+   gain most. Is that worth building?
+6. **How approval reaches the owner in the signed build.** A window opened by
+   a background agent isn't guaranteed to come to the front. A menu-bar item
+   or a notification that the owner clicks is the likely answer.
+7. **More than one machine.** Each laptop registers its own key with every
+   provider. Is there a lighter way to add a machine than repeating setup?
