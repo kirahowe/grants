@@ -73,7 +73,7 @@ flowchart TB
     ISS -->|"sign, unseal"| SE
     AG -->|"requests carrying a task token"| ISS
     TASK -->|"asks for its grants"| ISS
-    AMB -.->|"can run the launcher<br/>and reach into a task"| TASK
+    AMB -.->|"can start or declare a task<br/>and reach into one"| TASK
     ISS -->|"identity token"| PROV
     ISS -->|"identity token"| MIN
     MIN -->|"reads policy"| MAIN
@@ -104,8 +104,9 @@ hooks. A sandbox around the whole harness encloses all of them.
 
 **No boundary.** Everything else that runs as the developer shares one zone:
 dev servers, REPLs, editors, unsandboxed agents, and command-line tools with
-their stored logins. Code in this zone can start a task through the launcher,
-and can reach into a running one. The issuer records which task asked for a
+their stored logins. Code in this zone can start a task through the launcher
+or declare one over the issuer's socket, and it can reach into a running
+task. The issuer records which task asked for a
 grant, but in this zone that record is only bookkeeping. It doesn't keep tasks
 apart.
 
@@ -126,7 +127,7 @@ flowchart LR
     AG -. blocked .-> HOME["The developer's own logins:<br/>CLI tokens, SSH keys, cloud caches"]
     AG -. blocked .-> NET["Direct network egress"]
     AG -. blocked .-> REPL["REPL ports of other tasks"]
-    AG -. blocked .-> RUN["The launcher, for other tasks"]
+    AG -. blocked .-> RUN["The issuer's socket:<br/>starting or declaring a task"]
 ```
 
 Each blocked route in the diagram is a way to get around the grants:
@@ -138,9 +139,10 @@ Each blocked route in the diagram is a way to get around the grants:
   gateway.
 - A REPL port gives code execution inside another task, and whoever can
   evaluate code in a process has that task's grants.
-- The launcher starts tasks, so an agent that can run it has every grant that
-  doesn't need presence. The launcher reaches the issuer through a Unix
-  socket, so a sandbox closes this route by keeping that socket out of reach.
+- The issuer's socket is how a process starts a task through the launcher or
+  declares one itself. An agent that can reach it has every grant that
+  doesn't need presence, so a sandbox closes this route by keeping that
+  socket out of reach.
 
 ### Sandbox levels
 
@@ -295,9 +297,9 @@ rotates."
 ### A5. Unsandboxed code running as the developer
 
 Unsandboxed code can't export an issuer key, open a sealed static key, pass a
-presence check, or widen the pinned policy. But it can run the launcher, so it
-can use every grant that doesn't need presence, and it can read the
-developer's own logins.
+presence check, or widen the pinned policy. But it can run the launcher or
+declare a task over the issuer's socket, so it can use every grant that
+doesn't need presence, and it can read the developer's own logins.
 
 An agent with no sandbox is in this position. That's still better than an
 agent beside a stored key: it finds no stored secret that it can read, and a
@@ -355,7 +357,8 @@ leaves outside is in scope, and [Sandbox levels](#sandbox-levels) lists it.
    task can touch and for how long, but they say nothing about intent. An
    agent with legitimate write access to a repository can push bad code.
 2. **No wall between unsandboxed tasks.** On a bare laptop, the task name on a
-   request is only bookkeeping (see A5).
+   request is only bookkeeping, and an unsandboxed process can declare its own
+   (see A5).
 3. **Portable credentials under delivery by reference.** A leaked token works from
    anywhere until it expires (see A6). Injection avoids this, at the cost of a
    proxy in the request path.

@@ -128,8 +128,11 @@ task. The file holds no values:
    :allow    [[:post "/v1/payment_intents"]
               [:get  "/v1/payment_intents/*"]]}}
 
+ :default-task :dev
+
  :tasks
- {:serve   {:grants [:db/app :payments/test]}
+ {:dev     {:grants [:db/app :payments/test]}
+  :serve   {:grants [:db/app :payments/test]}
   :migrate {:grants [:db/migrate] :approval :presence}
   :agent   {:grants  [:repo/read :llm/claude]
             :deliver :inject}}}
@@ -344,18 +347,32 @@ a public endpoint for them.
 
 ### Identifying the task
 
-A launcher starts each task. For example, `grants run serve` runs the command
-that `grants.edn` declares for `serve`. When a process connects to the
-issuer's Unix socket, the issuer matches that peer process to a task it
-launched. The caller doesn't declare its own task, and nothing passes through
-the environment.
+A process becomes a task in one of two ways:
 
-Outside a sandbox, this matching is only bookkeeping, because any code running
-as the developer can run the launcher too. The threat model covers what that
-means.
+- **The launcher starts it.** For example, `grants run serve` runs the command
+  that `grants.edn` declares for `serve`. When the process connects to the
+  issuer's Unix socket, the issuer matches that peer process to the task it
+  launched.
+- **It declares its own task.** A process the launcher didn't start, such as
+  a REPL that CIDER or Calva started, connects to the socket and names its
+  project and task. If it names no task, the issuer uses the project's
+  `:default-task` from `grants.edn`. A `-Dgrants.task=...` JVM option in a
+  `deps.edn` alias overrides the default. A task name isn't a secret, so this
+  doesn't break principle 4.
 
-The issuer records every issuance: the task, the grant, the time, and the
-process.
+Either way, the issuer enforces the pinned `grants.edn`, approval when the
+file changes, and presence. Declaring a task is no more powerful than running
+the launcher, which any code running as the developer can already do. Outside
+a sandbox, matching a process to a task was only ever bookkeeping, and the
+threat model covers what that means. A sandboxed agent can do neither,
+because its sandbox keeps the issuer's socket out of reach.
+
+The daemon is installed as a launchd agent with socket activation, so the
+first connection starts it if it isn't already running. A Clojure developer
+adds the dependency and jacks in from their editor as usual.
+
+The issuer records every issuance: the task, the grant, the time, the
+process, and whether the task was launched or declared.
 
 ### Approving the file
 
@@ -489,8 +506,8 @@ sandbox on isn't a manual step. The generated settings do the following:
   readable.
 - Allow egress only to the gateway.
 - Keep other localhost ports and Unix sockets closed. That covers other
-  tasks' REPL ports. It also covers the issuer's socket, which the launcher
-  needs to start a task.
+  tasks' REPL ports. It also covers the issuer's socket, which a process
+  needs to start a task or declare one.
 - Turn off the harness's option to run a command outside the sandbox.
 
 Denying reads of the whole home directory outside the project is an optional
@@ -591,6 +608,12 @@ has:
   a private temporary file that lasts only as long as the task. That's
   another explicit trade-off.
 
+**Editor jack-in** (2026-11-11). A process the launcher didn't start can
+declare its own task, and a project names a default task for its REPL. Inside
+a sandbox the launcher requirement mattered. Outside one it added friction
+and no protection, because unsandboxed code can run the launcher anyway. See
+[Identifying the task](#identifying-the-task).
+
 **The remote minter is deferred** (2026-11-11). A project starts without one,
 and a provider that can only mint falls back to a static test key or stays out
 of scope. When GitHub matters, Octo STS is the model to follow, or to reuse.
@@ -647,10 +670,11 @@ stored key, because an agent finds no stored secret that it can read.
    laptop exchange instead, the library would need exchange code only for
    production and CI, and less provider code would exist in two languages.
    The application's code is the same either way.
-3. **Editor jack-in.** CIDER and Calva start the REPL's JVM themselves, but
-   the issuer only recognises processes that the launcher started. How does a
-   REPL started from an editor become a task? A custom jack-in command that
-   goes through `grants run` is one answer.
+3. **Presence per grant or per task.** `:approval :presence` belongs to a
+   task, so a REPL's `:dev` task can't hold `:db/migrate` behind Touch ID
+   without putting every `:dev` grant behind it. Should presence move to the
+   grant, so that a REPL can run a migration and ask for a fingerprint only
+   then?
 4. **Sealing a static key.** The design doesn't yet say how a static key gets
    into the gateway. One obvious shape is `grants seal :payments/test`,
    reading the key from a hidden prompt.
