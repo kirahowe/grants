@@ -836,10 +836,24 @@ to a static bounded key, or is out of scope.
 
 ### Where it runs
 
-The minter is a Cloudflare Worker. A Worker costs nothing at this scale, no
-agent runs there, and its secrets can be written but not read back. Each
-minting root is a Worker secret. One minter serves all of an owner's
-applications.
+The minter has no host yet. Whatever runs it has to meet two conditions:
+
+- It can sign with a root and can't read it. A GitHub App's root is an RSA
+  key, so this means a key service that signs on request and never releases
+  the key.
+- No login kept on a developer's laptop can deploy to it or change what it
+  runs.
+
+It should also cost one person close to nothing to run, with no machine to
+patch.
+
+A Cloudflare Worker fails both conditions. Code deployed to a Worker can read
+the Worker's secrets, so anyone who can deploy to it can copy a root. And
+`wrangler` keeps its deploy login in the home directory of the laptop the
+root was meant to stay off. The candidates are listed under
+[Open questions](#open-questions).
+
+One minter serves all of an owner's applications.
 
 The first root is a GitHub App's private key. With it the minter creates
 installation tokens that last an hour and cover only the repositories and
@@ -883,8 +897,8 @@ The proxy's policy decides which people can log in. The file decides what a
 logged-in person gets. The device ends up holding a login session and a
 token that expires within the hour.
 
-An application's own Worker can pass requests to the minter through a
-service binding, so the browser calls its own origin.
+How the browser's request reaches the minter depends on where the minter
+runs, which is open.
 
 ## Agents
 
@@ -1016,15 +1030,23 @@ a sandbox the launcher requirement mattered. Outside one it added friction
 and no protection, because unsandboxed code can run the launcher anyway. See
 [Identifying the task](#identifying-the-task).
 
-**The remote minter is a Worker, built second** (2026-11-11). A project
-starts without one, and a provider that can only mint falls back to a static
-bounded key or stays out of scope. The minter is designed now because one of
-the three [use cases](use-cases.md) can't lose its personal access token
-without it, and because a browser application needs a caller the rest of the
-design doesn't have. It runs as a Cloudflare Worker: that answers who
-operates it for a solo developer, and Cloudflare Access supplies the login
-for people. Octo STS is the model for its policy, which it reads from the
-repository at main. It's built after the first spike.
+**The remote minter is built second, and not on a Worker** (2026-11-11). A
+project starts without one, and a provider that can only mint falls back to a
+static bounded key or stays out of scope. The minter is designed now because
+one of the three [use cases](use-cases.md) can't lose its personal access
+token without it, and because a browser application needs a caller the rest
+of the design doesn't have. Octo STS is the model for its policy, which it
+reads from the repository at main. It's built after the first spike.
+
+A Cloudflare Worker was considered as its host and turned down. A Worker's
+code can read its secrets, and the `wrangler` login that deploys it sits on
+the laptop, so the root would be one deploy away from the machine it was
+meant to stay off. One Cloudflare account would also hold the login policy
+for people, the minter's code, and the root, with nothing separating them.
+An application's own Worker minting its own tokens has the same flaw.
+[Where it runs](#where-it-runs) gives the conditions for a host. Which host,
+and whether a remote minter is needed at all, is an
+[open question](#open-questions).
 
 **Production that isn't federated yet** (2026-11-11). In production, `#grant`
 can resolve by reading a static secret from the platform's own secret store.
@@ -1180,6 +1202,20 @@ stored key, because an agent finds no stored secret that it can read.
     organization. If it covers only the code the agent runs, the harness
     keeps its own login, which is one of the developer's logins that this
     tool doesn't manage.
+15. **Where the remote minter runs, and who needs it.**
+    [Where it runs](#where-it-runs) gives the conditions and rules out a
+    Worker. There are three candidates. A function in a cloud account whose
+    key service holds the root meets both conditions, and costs an account to
+    run and a login for people to build. A hosted service such as Octo STS
+    costs nothing to run, puts a third party's App on the repositories, and
+    covers only GitHub. The third is no remote minter: a root that is itself
+    bounded, such as the key of a GitHub App installed on a few repositories,
+    is sealed on the laptop and used only by the issuer. That has the
+    exposure of a sealed live key, gives up policy read from main, and serves
+    tasks on a laptop and nothing else. Of the three use cases, only
+    website-admin's publishing needs a person in a browser, and GitHub's own
+    user tokens could meet that outside this tool. Does the design keep that
+    caller?
 
 ## Claims to check
 
@@ -1240,9 +1276,9 @@ The following claims come from memory or from search summaries:
   data, and not only to sign.
 - Babashka can open a Unix domain socket.
 - `wrangler dev --var` sets a variable for a local run.
-- A Cloudflare Worker can sign an RS256 JWT with a key held as a Worker
-  secret, and a Worker secret can't be read back once it's set.
-- Cloudflare Access adds a JWT to each request that a Worker can verify
+- A cloud key service can import a GitHub App's RSA private key and sign an
+  RS256 JWT with it, without ever releasing the key.
+- Cloudflare Access adds a JWT to each request that a backend can verify
   against the team's published keys.
 - A commit made with a GitHub App installation token is attributed to the
   App.

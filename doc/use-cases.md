@@ -265,7 +265,10 @@ grants adds. If Workers ships its identity binding, the key can go.
 ### Publishing without a personal access token
 
 This is the one place where the design needs the remote minter, and where
-the application has something to give up.
+the application has something to give up. The minter has no host yet. It
+won't be a Cloudflare Worker, the application's own included, because a
+Worker's code can read the App's key and a laptop's `wrangler` login can
+deploy to it. See [Where it runs](design.md#where-it-runs).
 
 With the minter:
 
@@ -287,15 +290,16 @@ It costs the application four things, and they're its own to weigh:
 
 - Its specification promises that publishing needs nothing but GitHub. With
   the minter, publishing needs the minter once an hour as well.
-- Its README says Cloudflare never holds a GitHub credential. The minter is
-  a Worker, and it holds the App's key.
+- Its README says Cloudflare never holds a GitHub credential. Its Worker
+  would pass each one-hour token from the minter to the browser, so
+  Cloudflare would see those tokens, though never the App's key.
 - GitHub calls skip Access today, so drafting never waits on a login. A
   token request would go through Access, and an expired session would stop
   a sync until the next login.
 - A publish queued offline needs a live token when it finally goes out, as
   well as a connection.
 
-Until the minter is built, the personal access token stays.
+Until the minter has a host and is built, the personal access token stays.
 
 ### What the owner does once
 

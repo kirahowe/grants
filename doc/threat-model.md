@@ -49,9 +49,13 @@ This has three consequences:
 - A stolen console login is out of scope. Protect the login with a passkey or
   a hardware key, and keep its session out of reach of agents.
 
-The minter adds one more login to this list. It runs as a Cloudflare Worker,
-and whoever controls that Cloudflare account can deploy code that uses the
-minter's roots. That login needs the same protection as a provider's.
+The minter adds one more login to this list. Whoever can deploy to the
+minter's host can run code that uses its roots, and can copy them if the
+host lets code read its secrets. That login needs the same protection as a
+provider's, and it can't be one that a laptop keeps. A `wrangler` login in a
+home directory is the example: with the minter on a Cloudflare Worker, an
+agent that reads it could deploy a version that hands over the roots. The
+design rules that host out for this reason.
 
 ## Trust boundaries
 
