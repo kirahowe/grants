@@ -10,6 +10,12 @@ In the tables below, rows marked "read" were read in full during the survey.
 Rows marked "summary" come from search-result summaries and weren't checked
 against the source, so treat them as leads to confirm.
 
+A second pass on 2026-11-11 checked the providers and platforms that the
+[use cases](use-cases.md) depend on. It read Anthropic's federation overview
+and reference again, Fly's OpenID Connect page, GitHub's installation token
+endpoint, and OpenRouter's key management page. Plaid, Cloudflare Workers,
+and GitHub's device flow were checked only through search summaries.
+
 ## What products do with a static upstream key
 
 Nearly every product follows the same pattern. The real key stays outside the
@@ -79,7 +85,7 @@ Whether to revoke a key is then up to the provider.
 
 | Provider | What was found | Checked |
 | --- | --- | --- |
-| Anthropic | A custom OIDC issuer can be registered with its public keys inline, so the issuer needs no public endpoint. ES256 and the RSA families are accepted. The token lasts 60 seconds to 24 hours. Rules match on subject, audience, claims, or a CEL expression. A `jti` can be used once. The narrowest scope is inference in one workspace | read |
+| Anthropic | A custom OIDC issuer can be registered with its public keys inline, so the issuer needs no public endpoint. ES256 and the RSA families are accepted, and the JWT header must carry a `kid`. The token lasts 60 seconds to 24 hours, and never more than twice the remaining life of the JWT it was exchanged for. Rules match on subject, audience, claims, or a CEL expression. A `jti` can be used once. The narrowest scope is `workspace:inference`, and nothing finer exists. The token is sent as `Authorization: Bearer`, where an API key uses `x-api-key`. The official SDKs do the exchange themselves from a token file, which they read again at every exchange. Creating issuers and rules takes an organization admin, through the Console or the Admin API with an OAuth login | read |
 | OpenAI | Custom OIDC issuers, by discovery or with inline public keys, plus SPIFFE JWT tokens, and X.509 for the API. A mapping names a project and service account, and optional permissions narrow it. The page doesn't list accepted signing algorithms | read |
 | Stripe | Private preview. The issuers are AWS and Google Cloud. The access token lasts one hour | read |
 | Tailscale | Federation with a token-exchange endpoint | summary |
@@ -87,11 +93,21 @@ Whether to revoke a key is then up to the provider.
 | Datadog | AWS roles, and GitHub through a Datadog action | summary |
 | Hugging Face | Token exchange for organization members | summary |
 
+### Platforms that give a workload an identity
+
+| Platform | What was found | Checked |
+| --- | --- | --- |
+| Fly.io | A machine requests an OIDC token over a Unix socket at `/.fly/api`, and can set the audience. The issuer is `https://oidc.fly.io/<org>`, and `sub` is `<org>:<app>:<machine>`. Every request returns a new token with its own `jti`. The page doesn't name the signing algorithm or the discovery path | read |
+| Cloudflare Workers | No identity token for a Worker. A draft pull request in `workers-sdk`, opened on 2026-10-23, adds an identity binding behind a flag. Community projects run their own issuer as a second Worker | summary |
+| GitHub Actions | An OIDC token from the Actions endpoint, according to Anthropic's federation page, which has a setup guide for it. GitHub's own page wasn't read | summary |
+
 ### Providers with an API for minting keys
 
 | Provider | What was found | Checked |
 | --- | --- | --- |
-| GitHub Apps | Installation tokens last an hour and can be limited to named repositories and a subset of permissions. Minting needs the App's private key | summary |
+| GitHub Apps | Installation tokens last an hour and can be limited to named repositories and a subset of permissions, never beyond what the installation has. The caller authenticates with a JWT. The endpoint's page doesn't say who a commit made with the token is attributed to | read |
+| GitHub Apps, user tokens | A user token from the device flow lasts about eight hours and comes with a refresh token that lasts six months. Refreshing is said to need only the client ID. The token endpoints don't allow cross-origin requests from a browser | summary |
+| OpenRouter | A management key creates and deletes API keys, and can't make completions itself. A created key can carry a credit limit that resets on a schedule. The page describes no expiry for created keys | read |
 | Cloudflare | Tokens are created by API, with policies per resource, an expiry, and an IP condition | summary |
 | OpenAI | An admin key creates and deletes service accounts and project keys | summary |
 | Vercel | Tokens are created by API, with an expiry, per account, team, or project | summary |
@@ -103,6 +119,7 @@ Whether to revoke a key is then up to the provider.
 | Provider | What was found | Checked |
 | --- | --- | --- |
 | Stripe, outside the preview | Restricted keys are created in the dashboard. Sandboxes have their own keys | summary |
+| Plaid | A client ID and a secret, sent as the `PLAID-CLIENT-ID` and `PLAID-SECRET` headers or in the request body. The sandbox and production have different secrets and different hosts. Plaid has an OAuth token endpoint, but the summaries tie it to its dashboard tools and not to the product endpoints | summary |
 | Postmark | Account and server tokens, with no expiry | summary |
 | Sentry | Tokens are created in the UI | summary |
 | Linear | Personal keys are created in the UI | summary |
@@ -123,6 +140,12 @@ Everything in this section comes from summaries.
 ## Sources
 
 - Anthropic: https://platform.claude.com/docs/en/manage-claude/wif-reference
+  and https://platform.claude.com/docs/en/manage-claude/workload-identity-federation
+- Fly.io: https://docs.fly.io/security/openid-connect
+- Cloudflare Workers identity binding: https://github.com/cloudflare/workers-sdk/pull/16455
+- GitHub installation tokens: https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app
+- OpenRouter: https://openrouter.ai/docs/features/provisioning-api-keys
+- Plaid: https://plaid.com/docs/api/ and https://plaid.com/docs/api/oauth/
 - OpenAI: https://developers.openai.com/api/docs/guides/workload-identity-federation
 - Stripe: https://docs.stripe.com/workload-identity-federation
 - Fly Tokenizer: https://github.com/superfly/tokenizer and
