@@ -1135,6 +1135,51 @@ stored key, because an agent finds no stored secret that it can read.
 6. **More than one machine.** Each laptop registers its own issuer with
    every provider and with the minter. Two laptops is a list. Is there a
    lighter way to add a machine than repeating setup?
+7. **How the issuer is signed and shipped on macOS.** Apple's documentation
+   says a daemon can't carry a provisioning profile, and that a daemon which
+   needs a restricted entitlement has to be wrapped in an app-like bundle. If
+   the keychain access group that ties a key to the issuer is such an
+   entitlement, the issuer is a bundle signed by one Apple developer team,
+   and a copy built from source has no code-signature boundary. A Secure
+   Enclave key made through CryptoKit doesn't help by itself, because its
+   stored form appears to be bound to the device and not to the application.
+   Does this change the choice of Go for the macOS issuer, and how do other
+   people install it?
+8. **`#grant` inside a sandbox.** A sandboxed process can't reach the
+   issuer's socket, so a Clojure process that an agent starts can't resolve a
+   reference the way the library does elsewhere. It can reach the gateway.
+   Does the library resolve injected grants from a gateway URL that the
+   launcher supplies, and are by-reference and wrap grants unavailable there?
+9. **When a declared task ends.** A task token works only while its task is
+   running, and a live key stays unsealed until its task ends. For a process
+   the launcher started, that's the process exiting. For a process that
+   declared its own task, is it the socket connection closing?
+10. **Which file a process means.** A process that declares a task names its
+    project. Worktrees, jj workspaces, and branches give one application
+    several `grants.edn` files at the same time. Does the issuer pin one file
+    for each application or one for each directory, and what does a second
+    repository get when it claims the same `:app`?
+11. **Binding a sealed key to its host.** The host a sealed key is sent to
+    comes from `grants.edn`, so a change to `:host` retargets the key after
+    one approval. Recording the host when the key is sealed, and refusing to
+    send the key anywhere else until it's sealed again, would take that
+    decision away from the approval window. Is that worth the extra step when
+    a host really changes?
+12. **What `:allow` matches.** The rules are a method and a path. The design
+    doesn't say how the gateway treats `..` segments, percent-encoding, query
+    strings, or a trailing slash, and a path rule can't narrow an API that
+    puts the operation in the request body, such as GraphQL.
+13. **Two readers of one file.** The Go daemon reads `grants.edn` on a
+    laptop, and the Clojure library reads it in production. Neither the
+    file's schema nor the socket protocol is written down yet. What keeps the
+    two readers in agreement: a written schema with shared test files, or
+    something else?
+14. **What an agent's own model calls run on.** The `:agent` task lists
+    `:llm/claude`. If that covers the harness's own model access, the harness
+    moves from the developer's subscription login to API billing in a Console
+    organization. If it covers only the code the agent runs, the harness
+    keeps its own login, which is one of the developer's logins that this
+    tool doesn't manage.
 
 ## Claims to check
 

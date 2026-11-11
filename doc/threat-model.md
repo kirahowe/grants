@@ -301,6 +301,9 @@ command sandbox, that's its shell commands. What the harness does through its
 own tools, MCP servers, and hooks is outside, and
 [Sandbox levels](#sandbox-levels) lists what that leaves open.
 
+A sandboxed agent can also write code that another task runs later, with that
+task's grants. Known gap 14 covers this.
+
 The agent can still misuse its grants within their scope. Operation rules and
 budgets at the gateway narrow that, and they're the only control this design
 has over what a grant is used for.
@@ -453,6 +456,23 @@ leaves outside is in scope, and [Sandbox levels](#sandbox-levels) lists it.
     token, and HTTP clients log URLs. The token works only on this machine
     and only while the task runs, so a logged copy is useful to code that's
     already in position A5 and to nothing else.
+14. **The working copy leads into other tasks.** A sandboxed agent writes
+    code in the project, and the owner's tasks run that code. What the agent
+    wrote then runs under `:serve` with everything that task has, which can
+    include a live key and every wrapped token. A sandbox can't close this
+    route, because writing code is the agent's job. The only check is the
+    owner reading a change before running it under a task that has more than
+    the agent's grants.
+15. **A sealed key follows the file.** A sealed key is filed under its
+    application, grant, profile, and slot, and the host it's sent to comes
+    from `grants.edn`. A change to a grant's `:host` sends the key somewhere
+    new, and the approval window is the only check on that change. The design
+    also doesn't say what a second repository gets when it claims the same
+    `:app`.
+16. **The issuer's own records.** The pinned `grants.edn`, the live-key
+    opt-ins, and the software-key opt-in are records the issuer keeps on
+    disk. The design doesn't say what stops code running as the developer
+    from editing them.
 
 ## How to decide what to change
 
